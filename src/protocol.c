@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Packet ──────────────────────────────────────────────────────── */
-
 void packet_init(Packet *p)
 {
     memset(p, 0, sizeof(*p));
@@ -18,55 +16,43 @@ void packet_init(Packet *p)
 
 size_t packet_to_bytes(const Packet *p, uint8_t *buf, size_t buf_size)
 {
-    /* header (4) + hcrc (1) + product (1) + seq (4) + pad (2) +
-       src/dst (2) + dsrc/ddst (2) + cmd (2) + payload + crc16 (2) */
     size_t need = 18 + (p->version >= 3 ? 2 : 0) + p->payload_len + 2;
     if (buf_size < need)
         return 0;
 
     size_t pos = 0;
 
-    /* Header: prefix, version, payload length */
     buf[pos++] = PACKET_PREFIX;
     buf[pos++] = p->version;
     buf[pos++] = (uint8_t)(p->payload_len & 0xFF);
     buf[pos++] = (uint8_t)((p->payload_len >> 8) & 0xFF);
 
-    /* Header CRC8 over first 4 bytes */
     buf[pos] = crc8_ccitt(buf, 4);
     pos++;
 
-    /* Product byte */
     buf[pos++] = (p->product_id >= 0) ? 0x0D : 0x0C;
 
-    /* Sequence */
     memcpy(buf + pos, p->seq, 4);
     pos += 4;
 
-    /* Static padding */
     buf[pos++] = 0x00;
     buf[pos++] = 0x00;
 
-    /* Source / destination */
     buf[pos++] = p->src;
     buf[pos++] = p->dst;
 
-    /* V3+ dsrc/ddst */
     if (p->version >= 3) {
         buf[pos++] = p->dsrc;
         buf[pos++] = p->ddst;
     }
 
-    /* Command set / id */
     buf[pos++] = p->cmd_set;
     buf[pos++] = p->cmd_id;
 
-    /* Payload */
     if (p->payload_len > 0 && p->payload)
         memcpy(buf + pos, p->payload, p->payload_len);
     pos += p->payload_len;
 
-    /* CRC16 over everything so far */
     uint16_t crc = crc16_arc(buf, pos);
     buf[pos++] = (uint8_t)(crc & 0xFF);
     buf[pos++] = (uint8_t)((crc >> 8) & 0xFF);
@@ -86,7 +72,6 @@ bool packet_from_bytes(const uint8_t *data, size_t len, Packet *p)
 
     uint16_t payload_length = (uint16_t)data[2] | ((uint16_t)data[3] << 8);
 
-    /* Verify CRC16 */
     if (version == 2 || version == 3 || version == 4) {
         uint16_t stored_crc = (uint16_t)data[len - 2] |
                               ((uint16_t)data[len - 1] << 8);
@@ -94,7 +79,6 @@ bool packet_from_bytes(const uint8_t *data, size_t len, Packet *p)
             return false;
     }
 
-    /* Verify header CRC8 */
     if (crc8_ccitt(data, 4) != data[4])
         return false;
 
@@ -132,8 +116,6 @@ bool packet_from_bytes(const uint8_t *data, size_t len, Packet *p)
     return true;
 }
 
-/* ── EncPacket ───────────────────────────────────────────────────── */
-
 uint8_t *enc_packet_build(const uint8_t *inner, size_t inner_len,
                           uint8_t frame_type,
                           const uint8_t *enc_key, const uint8_t *iv,
@@ -150,7 +132,6 @@ uint8_t *enc_packet_build(const uint8_t *inner, size_t inner_len,
         payload = encrypted;
     }
 
-    /* header(6) + payload + crc16(2) */
     size_t total = 6 + payload_len + 2;
     uint8_t *buf = malloc(total);
     if (!buf) {
@@ -162,8 +143,8 @@ uint8_t *enc_packet_build(const uint8_t *inner, size_t inner_len,
     buf[pos++] = ENC_PACKET_PREFIX_0;
     buf[pos++] = ENC_PACKET_PREFIX_1;
     buf[pos++] = (uint8_t)(frame_type << 4);
-    buf[pos++] = 0x01; /* unknown byte */
-    uint16_t plen = (uint16_t)(payload_len + 2); /* +2 for trailing CRC */
+    buf[pos++] = 0x01;
+    uint16_t plen = (uint16_t)(payload_len + 2);
     buf[pos++] = (uint8_t)(plen & 0xFF);
     buf[pos++] = (uint8_t)((plen >> 8) & 0xFF);
 
@@ -178,8 +159,6 @@ uint8_t *enc_packet_build(const uint8_t *inner, size_t inner_len,
     *out_len = pos;
     return buf;
 }
-
-/* ── Protobuf decoder ────────────────────────────────────────────── */
 
 static bool read_varint(const uint8_t *data, size_t len, size_t *pos,
                         uint64_t *val)
@@ -211,7 +190,7 @@ size_t protobuf_decode(const uint8_t *data, size_t len,
         uint32_t field_num = (uint32_t)(tag >> 3);
         uint8_t  wire_type = (uint8_t)(tag & 0x07);
 
-        if (wire_type == 0) { /* varint */
+        if (wire_type == 0) {
             uint64_t val;
             if (!read_varint(data, len, &pos, &val))
                 break;
@@ -219,7 +198,7 @@ size_t protobuf_decode(const uint8_t *data, size_t len,
             fields[count].wire_type = 0;
             fields[count].value.u64 = val;
             count++;
-        } else if (wire_type == 5) { /* fixed32 / float */
+        } else if (wire_type == 5) {
             if (pos + 4 > len) break;
             float fval;
             memcpy(&fval, data + pos, 4);
@@ -228,7 +207,7 @@ size_t protobuf_decode(const uint8_t *data, size_t len,
             fields[count].wire_type = 5;
             fields[count].value.f32 = fval;
             count++;
-        } else if (wire_type == 1) { /* fixed64 / double */
+        } else if (wire_type == 1) {
             if (pos + 8 > len) break;
             double dval;
             memcpy(&dval, data + pos, 8);
@@ -237,7 +216,7 @@ size_t protobuf_decode(const uint8_t *data, size_t len,
             fields[count].wire_type = 1;
             fields[count].value.f64 = dval;
             count++;
-        } else if (wire_type == 2) { /* length-delimited – skip */
+        } else if (wire_type == 2) {
             uint64_t length;
             if (!read_varint(data, len, &pos, &length))
                 break;
@@ -250,9 +229,6 @@ size_t protobuf_decode(const uint8_t *data, size_t len,
     return count;
 }
 
-/* ── Status parser ───────────────────────────────────────────────── */
-
-/* Find a protobuf field by number. Returns NULL if not found. */
 static const PBField *find_field(const PBField *fields, size_t count,
                                  uint32_t num)
 {
@@ -287,7 +263,6 @@ bool parse_river3_status(const uint8_t *data, size_t len, River3Status *out)
     out->ac_output_power  = field_float(fields, count, 9);
     out->ac_plugged_in    = field_float(fields, count, 227) > 0;
 
-    /* battery_level: prefer field 262, fall back to 4 */
     float batt = field_float(fields, count, 262);
     if (batt == 0)
         batt = field_float(fields, count, 4);

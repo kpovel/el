@@ -2,7 +2,6 @@
 #include "crypto.h"
 #include "protocol.h"
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,8 +14,6 @@
 #include <openssl/core_names.h>
 #include <openssl/ec.h>
 #include <openssl/bn.h>
-
-/* ── Constants ───────────────────────────────────────────────────── */
 
 #define BLUEZ_SERVICE       "org.bluez"
 #define ADAPTER_IFACE       "org.bluez.Adapter1"
@@ -35,13 +32,9 @@ static const char *RIVER3_PREFIXES[] = {
     "R631", "R651", "R653", "R654", "R655", NULL
 };
 
-/* ── Logging ─────────────────────────────────────────────────────── */
-
 #define LOG_INFO(...)  fprintf(stderr, "[INFO] " __VA_ARGS__), fprintf(stderr, "\n")
 #define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__), fprintf(stderr, "\n")
 #define LOG_DBG(...)   ((void)0)
-
-/* ── Connection state ────────────────────────────────────────────── */
 
 struct BLEConn {
     sd_bus *bus;
@@ -50,35 +43,33 @@ struct BLEConn {
     char    write_path[256];
     char    adapter_path[64];
 
-    /* Auth */
+
     char    device_sn[64];
     char    user_id[64];
     bool    authenticated;
     bool    running;
 
-    /* Crypto state */
+
     EVP_PKEY *our_key;
-    uint8_t   shared_key[20]; /* secp160r1 => 20 bytes max */
+    uint8_t   shared_key[20];
     size_t    shared_key_len;
     uint8_t   iv[16];
     uint8_t   session_key[16];
     bool      has_session_key;
 
-    /* Data */
+
     uint8_t   recv_buf[4096];
     size_t    recv_len;
     River3Status latest_status;
     bool         has_status;
 
-    /* Callback */
+
     ble_status_cb  status_cb;
     void          *status_cb_user;
 
-    /* Signal slots */
+
     sd_bus_slot *prop_slot;
 };
-
-/* ── Helpers ─────────────────────────────────────────────────────── */
 
 static int get_ecdh_size(int curve_num)
 {
@@ -91,7 +82,6 @@ static int get_ecdh_size(int curve_num)
     }
 }
 
-/* Convert "XX:XX:XX:XX:XX:XX" to D-Bus path component "dev_XX_XX_XX_XX_XX_XX" */
 static void addr_to_path(const char *addr, char *out)
 {
     strcpy(out, "dev_");
@@ -102,7 +92,6 @@ static void addr_to_path(const char *addr, char *out)
     out[j] = '\0';
 }
 
-/* Find GATT characteristic path by UUID under the device path. */
 static bool find_char_path(sd_bus *bus, const char *dev_path,
                            const char *uuid, char *out, size_t out_size)
 {
@@ -112,7 +101,7 @@ static bool find_char_path(sd_bus *bus, const char *dev_path,
                                NULL, &reply, "");
     if (r < 0) return false;
 
-    /* Iterate: a{oa{sa{sv}}} */
+
     r = sd_bus_message_enter_container(reply, 'a', "{oa{sa{sv}}}");
     if (r < 0) goto out;
 
@@ -120,21 +109,21 @@ static bool find_char_path(sd_bus *bus, const char *dev_path,
         const char *path = NULL;
         sd_bus_message_read(reply, "o", &path);
 
-        /* Only look under our device path */
+
         if (!path || strncmp(path, dev_path, strlen(dev_path)) != 0) {
             sd_bus_message_skip(reply, "a{sa{sv}}");
             sd_bus_message_exit_container(reply);
             continue;
         }
 
-        /* Iterate interfaces */
+
         sd_bus_message_enter_container(reply, 'a', "{sa{sv}}");
         while (sd_bus_message_enter_container(reply, 'e', "sa{sv}") > 0) {
             const char *iface = NULL;
             sd_bus_message_read(reply, "s", &iface);
 
             if (iface && strcmp(iface, GATT_CHAR_IFACE) == 0) {
-                /* Check UUID property */
+
                 sd_bus_message_enter_container(reply, 'a', "{sv}");
                 while (sd_bus_message_enter_container(reply, 'e', "sv") > 0) {
                     const char *prop = NULL;
@@ -174,7 +163,6 @@ out:
     return false;
 }
 
-/* Write raw bytes to a GATT characteristic. */
 static int gatt_write(sd_bus *bus, const char *char_path,
                       const uint8_t *data, size_t len)
 {
@@ -187,7 +175,7 @@ static int gatt_write(sd_bus *bus, const char *char_path,
     r = sd_bus_message_append_array(msg, 'y', data, len);
     if (r < 0) { sd_bus_message_unref(msg); return r; }
 
-    /* Options dict: a{sv} (empty) */
+
     r = sd_bus_message_open_container(msg, 'a', "{sv}");
     if (r < 0) { sd_bus_message_unref(msg); return r; }
     r = sd_bus_message_close_container(msg);
@@ -202,7 +190,6 @@ static int gatt_write(sd_bus *bus, const char *char_path,
     return r;
 }
 
-/* Start or stop notifications on a characteristic. */
 static int gatt_notify(sd_bus *bus, const char *char_path, bool start)
 {
     sd_bus_error error = SD_BUS_ERROR_NULL;
@@ -218,13 +205,6 @@ static int gatt_notify(sd_bus *bus, const char *char_path, bool start)
     return r;
 }
 
-/* ── ECDH key generation (secp160r1) — OpenSSL 3.0+ EVP API ─────── */
-
-/*
- * Generate ECDH keypair on secp160r1.
- * pub_out: 40-byte buffer for raw public key (x || y, no 0x04 prefix)
- * Returns EVP_PKEY* (caller owns) or NULL.
- */
 static EVP_PKEY *ecdh_generate(uint8_t pub_out[40])
 {
     EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
@@ -246,20 +226,20 @@ static EVP_PKEY *ecdh_generate(uint8_t pub_out[40])
     if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto fail;
 
-    /* Extract uncompressed public key: 0x04 || x(20) || y(20) = 41 bytes */
+
     size_t pub_len = 0;
     if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
                                         NULL, 0, &pub_len) <= 0)
         goto fail_key;
 
-    uint8_t pub_buf[65]; /* max uncompressed EC point */
+    uint8_t pub_buf[65];
     if (pub_len > sizeof(pub_buf))
         goto fail_key;
     if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
                                         pub_buf, sizeof(pub_buf), &pub_len) <= 0)
         goto fail_key;
 
-    /* Skip the 0x04 uncompressed prefix */
+
     if (pub_len >= 41 && pub_buf[0] == 0x04)
         memcpy(pub_out, pub_buf + 1, 40);
     else
@@ -275,22 +255,16 @@ fail:
     return NULL;
 }
 
-/*
- * Compute ECDH shared secret from our private key and the peer's raw
- * public key bytes (x || y, each 20 bytes for secp160r1).
- * out: buffer for shared secret, out_len set to actual length.
- * Returns true on success.
- */
 static bool ecdh_compute(EVP_PKEY *our_key, const uint8_t *peer_pub,
                          size_t peer_len, uint8_t *out, size_t *out_len)
 {
-    /* Build uncompressed point: 0x04 || peer_pub */
+
     uint8_t point[65];
     point[0] = 0x04;
     memcpy(point + 1, peer_pub, peer_len);
     size_t point_len = 1 + peer_len;
 
-    /* Build peer EVP_PKEY from raw public key */
+
     OSSL_PARAM_BLD *bld = OSSL_PARAM_BLD_new();
     if (!bld) return false;
 
@@ -312,7 +286,7 @@ static bool ecdh_compute(EVP_PKEY *our_key, const uint8_t *peer_pub,
                           EVP_PKEY_PUBLIC_KEY, params) <= 0)
         goto done_fromdata;
 
-    /* Derive shared secret */
+
     EVP_PKEY_CTX *derive_ctx = EVP_PKEY_CTX_new(our_key, NULL);
     if (!derive_ctx) goto done_peer;
 
@@ -338,12 +312,6 @@ done_params:
     return ok;
 }
 
-/* ── Enc packet response parsing ─────────────────────────────────── */
-
-/* Parse a simple (unencrypted) enc-packet response.
- * Returns pointer into data for the payload, sets *payload_len.
- * Returns NULL on CRC error or if too short.
- */
 static const uint8_t *parse_enc_response(const uint8_t *data, size_t len,
                                          size_t *payload_len)
 {
@@ -353,7 +321,7 @@ static const uint8_t *parse_enc_response(const uint8_t *data, size_t len,
     if (data_end > len) return NULL;
 
     const uint8_t *payload = data + 6;
-    size_t pl = plen - 2; /* subtract trailing CRC */
+    size_t pl = plen - 2;
 
     uint16_t stored_crc = (uint16_t)data[data_end - 2] |
                           ((uint16_t)data[data_end - 1] << 8);
@@ -364,26 +332,22 @@ static const uint8_t *parse_enc_response(const uint8_t *data, size_t len,
     return payload;
 }
 
-/* ── Authentication ──────────────────────────────────────────────── */
-
-/* Send data, then poll for a notification response. Returns response
- * length in resp_buf, or -1 on timeout. */
 static int send_and_poll(BLEConn *conn, const uint8_t *data, size_t len,
                          uint8_t *resp_buf, size_t resp_size,
                          int timeout_ms)
 {
-    /* StartNotify */
+
     gatt_notify(conn->bus, conn->notify_path, true);
 
-    /* Small delay for BlueZ to set up */
-    struct timespec ts = {0, 50000000}; /* 50ms */
+
+    struct timespec ts = {0, 50000000};
     nanosleep(&ts, NULL);
 
-    /* Write */
+
     if (gatt_write(conn->bus, conn->write_path, data, len) < 0)
         return -1;
 
-    /* Poll for PropertiesChanged on notify char */
+
     uint64_t deadline = 0;
     {
         struct timespec now;
@@ -401,9 +365,9 @@ static int send_and_poll(BLEConn *conn, const uint8_t *data, size_t len,
 
         int r = sd_bus_process(conn->bus, NULL);
         if (r < 0) break;
-        if (r > 0) continue; /* more to process */
+        if (r > 0) continue;
 
-        /* Check if Value property changed */
+
         sd_bus_message *prop_msg = NULL;
         sd_bus_error error = SD_BUS_ERROR_NULL;
         r = sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
@@ -437,7 +401,7 @@ static bool authenticate(BLEConn *conn)
 {
     uint8_t resp[512];
 
-    /* Step 1: Public key exchange */
+
     LOG_INFO("Step 1: Public key exchange");
     uint8_t our_pub[40];
     conn->our_key = ecdh_generate(our_pub);
@@ -446,7 +410,7 @@ static bool authenticate(BLEConn *conn)
         return false;
     }
 
-    /* Build command: 0x01 0x00 <40-byte pubkey> */
+
     uint8_t cmd1[42];
     cmd1[0] = 0x01;
     cmd1[1] = 0x00;
@@ -463,7 +427,7 @@ static bool authenticate(BLEConn *conn)
         return false;
     }
 
-    /* Parse response */
+
     size_t payload_len = 0;
     const uint8_t *payload = parse_enc_response(resp, (size_t)rlen, &payload_len);
     if (!payload || payload_len < 43) {
@@ -474,23 +438,23 @@ static bool authenticate(BLEConn *conn)
     int ecdh_size = get_ecdh_size(payload[2]);
     const uint8_t *peer_pub = payload + 3;
 
-    /* Compute shared secret */
+
     if (!ecdh_compute(conn->our_key, peer_pub, (size_t)ecdh_size,
                       conn->shared_key, &conn->shared_key_len)) {
         LOG_ERR("ECDH compute failed");
         return false;
     }
 
-    /* IV = MD5(shared_key) */
+
     md5_hash(conn->shared_key, conn->shared_key_len, conn->iv);
 
-    /* Truncate shared key to 16 bytes for AES */
+
     if (conn->shared_key_len > 16)
         conn->shared_key_len = 16;
 
     LOG_INFO("Shared key established");
 
-    /* Step 2: Request session key */
+
     LOG_INFO("Step 2: Request session key");
     uint8_t cmd2 = 0x02;
     uint8_t *pkt2 = enc_packet_build(&cmd2, 1, FRAME_TYPE_COMMAND, NULL, NULL, &enc_len);
@@ -509,7 +473,7 @@ static bool authenticate(BLEConn *conn)
         return false;
     }
 
-    /* Decrypt payload[1..] with shared_key/iv to get sRand(16) + seed(2) */
+
     size_t dec_len = 0;
     uint8_t *dec = aes_decrypt(payload + 1, payload_len - 1,
                                conn->shared_key, conn->iv, &dec_len);
@@ -529,7 +493,7 @@ static bool authenticate(BLEConn *conn)
     conn->has_session_key = true;
     LOG_INFO("Session key generated");
 
-    /* Step 3: Check auth status */
+
     LOG_INFO("Step 3: Check auth status");
     Packet p3;
     packet_init(&p3);
@@ -547,18 +511,18 @@ static bool authenticate(BLEConn *conn)
                                      conn->session_key, conn->iv, &enc_len);
     if (!pkt3) return false;
 
-    /* Just send, don't need to parse response */
+
     gatt_notify(conn->bus, conn->notify_path, true);
     struct timespec ts50 = {0, 50000000};
     nanosleep(&ts50, NULL);
     gatt_write(conn->bus, conn->write_path, pkt3, enc_len);
     free(pkt3);
 
-    /* Brief wait */
+
     struct timespec ts = {1, 0};
     nanosleep(&ts, NULL);
 
-    /* Step 4: Send authentication */
+
     LOG_INFO("Step 4: Authenticate");
     uint8_t auth_payload[32];
     generate_auth_payload(conn->user_id, conn->device_sn, auth_payload);
@@ -581,11 +545,11 @@ static bool authenticate(BLEConn *conn)
                                      conn->session_key, conn->iv, &enc_len);
     if (!pkt4) return false;
 
-    /* Notification listener stays on from step 3 */
+
     gatt_write(conn->bus, conn->write_path, pkt4, enc_len);
     free(pkt4);
 
-    /* Wait for auth confirmation via notifications */
+
     {
         struct timespec deadline_ts;
         clock_gettime(CLOCK_MONOTONIC, &deadline_ts);
@@ -602,14 +566,12 @@ static bool authenticate(BLEConn *conn)
             int r = sd_bus_process(conn->bus, NULL);
             if (r < 0) break;
             if (r == 0)
-                sd_bus_wait(conn->bus, 100000); /* 100ms */
+                sd_bus_wait(conn->bus, 100000);
         }
     }
 
     return conn->authenticated;
 }
-
-/* ── Notification handler ────────────────────────────────────────── */
 
 static void process_buffer(BLEConn *conn)
 {
@@ -625,15 +587,15 @@ static void process_buffer(BLEConn *conn)
             break;
 
         const uint8_t *enc_payload = conn->recv_buf + 6;
-        size_t enc_payload_len = plen - 2; /* subtract CRC */
+        size_t enc_payload_len = plen - 2;
 
-        /* Consume from buffer */
+
         size_t remaining = conn->recv_len - data_end;
         if (remaining > 0)
             memmove(conn->recv_buf, conn->recv_buf + data_end, remaining);
         conn->recv_len = remaining;
 
-        /* Decrypt */
+
         if (!conn->has_session_key)
             continue;
 
@@ -642,7 +604,7 @@ static void process_buffer(BLEConn *conn)
                                    conn->session_key, conn->iv, &dec_len);
         if (!dec) continue;
 
-        /* Parse inner packet */
+
         Packet pkt;
         if (!packet_from_bytes(dec, dec_len, &pkt)) {
             free(dec);
@@ -650,7 +612,7 @@ static void process_buffer(BLEConn *conn)
         }
         free(dec);
 
-        /* Auth response */
+
         if (pkt.src == 0x35 && pkt.cmd_set == 0x35 && pkt.cmd_id == 0x86) {
             if (pkt.payload_len == 1 && pkt.payload[0] == 0x00) {
                 LOG_INFO("Auth confirmed!");
@@ -662,20 +624,20 @@ static void process_buffer(BLEConn *conn)
             continue;
         }
 
-        /* Skip non-data packets */
+
         if (pkt.cmd_set != 0xFE || pkt.cmd_id != 0x15) {
             free(pkt.payload);
             continue;
         }
 
-        /* XOR decode */
+
         uint8_t xor_key = pkt.seq[0];
         if (xor_key != 0 && pkt.payload) {
             for (size_t i = 0; i < pkt.payload_len; i++)
                 pkt.payload[i] ^= xor_key;
         }
 
-        /* Only parse the main status packet (starts with field tag 0x08) */
+
         if (pkt.payload_len < 50 || !pkt.payload || pkt.payload[0] != 0x08) {
             free(pkt.payload);
             continue;
@@ -683,7 +645,7 @@ static void process_buffer(BLEConn *conn)
 
         River3Status status;
         if (parse_river3_status(pkt.payload, pkt.payload_len, &status)) {
-            /* Receiving status data means auth succeeded */
+
             if (!conn->authenticated) {
                 LOG_INFO("Auth confirmed (status data received)");
                 conn->authenticated = true;
@@ -709,7 +671,7 @@ static int on_properties_changed(sd_bus_message *msg, void *userdata,
     if (r < 0 || !iface) return 0;
     if (strcmp(iface, GATT_CHAR_IFACE) != 0) return 0;
 
-    /* Enter changed properties dict: a{sv} */
+
     r = sd_bus_message_enter_container(msg, 'a', "{sv}");
     if (r < 0) return 0;
 
@@ -742,8 +704,6 @@ static int on_properties_changed(sd_bus_message *msg, void *userdata,
     return 0;
 }
 
-/* ── Scan ────────────────────────────────────────────────────────── */
-
 int ble_scan(EcoFlowDevice *devs, int max_devs, int timeout_sec)
 {
     sd_bus *bus = NULL;
@@ -753,10 +713,10 @@ int ble_scan(EcoFlowDevice *devs, int max_devs, int timeout_sec)
         return 0;
     }
 
-    /* Find adapter */
+
     const char *adapter = "/org/bluez/hci0";
 
-    /* Start discovery */
+
     sd_bus_error error = SD_BUS_ERROR_NULL;
     r = sd_bus_call_method(bus, BLUEZ_SERVICE, adapter,
                            ADAPTER_IFACE, "StartDiscovery",
@@ -770,7 +730,7 @@ int ble_scan(EcoFlowDevice *devs, int max_devs, int timeout_sec)
 
     LOG_INFO("Scanning for %d seconds...", timeout_sec);
 
-    /* Wait for scan duration, processing bus events */
+
     struct timespec end;
     clock_gettime(CLOCK_MONOTONIC, &end);
     end.tv_sec += timeout_sec;
@@ -785,17 +745,17 @@ int ble_scan(EcoFlowDevice *devs, int max_devs, int timeout_sec)
         r = sd_bus_process(bus, NULL);
         if (r < 0) break;
         if (r == 0)
-            sd_bus_wait(bus, 500000); /* 500ms */
+            sd_bus_wait(bus, 500000);
     }
 
-    /* Stop discovery */
+
     error = SD_BUS_ERROR_NULL;
     sd_bus_call_method(bus, BLUEZ_SERVICE, adapter,
                        ADAPTER_IFACE, "StopDiscovery",
                        &error, NULL, "");
     sd_bus_error_free(&error);
 
-    /* Enumerate discovered devices via GetManagedObjects */
+
     sd_bus_message *reply = NULL;
     error = SD_BUS_ERROR_NULL;
     r = sd_bus_call_method(bus, BLUEZ_SERVICE, "/",
@@ -845,7 +805,7 @@ int ble_scan(EcoFlowDevice *devs, int max_devs, int timeout_sec)
                     } else if (prop && strcmp(prop, "RSSI") == 0) {
                         sd_bus_message_read(reply, "v", "n", &rssi);
                     } else if (prop && strcmp(prop, "ManufacturerData") == 0) {
-                        /* a{qv} - dict of uint16->variant(ay) */
+
                         sd_bus_message_enter_container(reply, 'v', "a{qv}");
                         sd_bus_message_enter_container(reply, 'a', "{qv}");
                         while (sd_bus_message_enter_container(reply, 'e', "qv") > 0) {
@@ -886,12 +846,12 @@ int ble_scan(EcoFlowDevice *devs, int max_devs, int timeout_sec)
         if (!has_ecoflow_mfr || found >= max_devs)
             continue;
 
-        /* Extract serial from manufacturer data */
+
         char serial[32] = "Unknown";
         if (mfr_len >= 17)
             snprintf(serial, sizeof(serial), "%.*s", 16, (char *)mfr_data + 1);
 
-        /* Check if River 3 */
+
         bool is_river3 = false;
         for (int i = 0; RIVER3_PREFIXES[i]; i++) {
             if (strncmp(serial, RIVER3_PREFIXES[i], strlen(RIVER3_PREFIXES[i])) == 0) {
@@ -926,8 +886,6 @@ scan_done:
     sd_bus_unref(bus);
     return found;
 }
-
-/* ── Connect ─────────────────────────────────────────────────────── */
 
 static bool wait_services_resolved(sd_bus *bus, const char *dev_path,
                                    int timeout_sec)
@@ -981,7 +939,7 @@ BLEConn *ble_connect(const char *device_address,
         return NULL;
     }
 
-    /* Build device path */
+
     char dev_comp[64];
     addr_to_path(device_address, dev_comp);
     snprintf(conn->device_path, sizeof(conn->device_path),
@@ -989,21 +947,21 @@ BLEConn *ble_connect(const char *device_address,
 
     LOG_INFO("Connecting to %s (%s)...", device_address, conn->device_path);
 
-    /* Start discovery so BlueZ creates the device object if needed */
+
     sd_bus_error error = SD_BUS_ERROR_NULL;
     sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->adapter_path,
                        ADAPTER_IFACE, "StartDiscovery",
                        &error, NULL, "");
     sd_bus_error_free(&error);
 
-    /* Wait for the device object to appear */
+
     {
         struct timespec disc_end;
         clock_gettime(CLOCK_MONOTONIC, &disc_end);
         disc_end.tv_sec += 10;
 
         while (1) {
-            /* Check if device path exists by reading a property */
+
             sd_bus_error e2 = SD_BUS_ERROR_NULL;
             sd_bus_message *prop_msg = NULL;
             r = sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
@@ -1035,14 +993,14 @@ BLEConn *ble_connect(const char *device_address,
         }
     }
 
-    /* Stop discovery before connecting */
+
     error = SD_BUS_ERROR_NULL;
     sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->adapter_path,
                        ADAPTER_IFACE, "StopDiscovery",
                        &error, NULL, "");
     sd_bus_error_free(&error);
 
-    /* Connect */
+
     error = SD_BUS_ERROR_NULL;
     r = sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->device_path,
                            DEVICE_IFACE, "Connect",
@@ -1065,7 +1023,7 @@ BLEConn *ble_connect(const char *device_address,
 
     LOG_INFO("Services resolved, finding characteristics...");
 
-    /* Find GATT characteristic paths */
+
     if (!find_char_path(conn->bus, conn->device_path, NOTIFY_UUID,
                         conn->notify_path, sizeof(conn->notify_path))) {
         LOG_ERR("Notify characteristic not found");
@@ -1081,7 +1039,7 @@ BLEConn *ble_connect(const char *device_address,
 
     LOG_INFO("Characteristics found, authenticating...");
 
-    /* Register PropertiesChanged handler for the notify characteristic */
+
     char match[512];
     snprintf(match, sizeof(match),
              "type='signal',sender='" BLUEZ_SERVICE "',"
@@ -1107,14 +1065,12 @@ BLEConn *ble_connect(const char *device_address,
     return conn;
 }
 
-/* ── Event loop ──────────────────────────────────────────────────── */
-
 int ble_run(BLEConn *conn, int timeout_sec)
 {
     if (!conn) return -1;
     conn->running = true;
 
-    /* Make sure notifications are on */
+
     gatt_notify(conn->bus, conn->notify_path, true);
 
     uint64_t deadline = 0;
@@ -1138,7 +1094,7 @@ int ble_run(BLEConn *conn, int timeout_sec)
                 break;
         }
 
-        sd_bus_wait(conn->bus, 1000000); /* 1s */
+        sd_bus_wait(conn->bus, 1000000);
     }
 
     return 0;
@@ -1158,8 +1114,6 @@ bool ble_is_authenticated(const BLEConn *conn)
 {
     return conn && conn->authenticated;
 }
-
-/* ── Disconnect ──────────────────────────────────────────────────── */
 
 void ble_disconnect(BLEConn *conn)
 {

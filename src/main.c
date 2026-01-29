@@ -8,8 +8,6 @@
 #include "ble.h"
 #include "protocol.h"
 
-/* ── Globals for signal handling ──────────────────────────────────── */
-
 static BLEConn *g_conn = NULL;
 
 static void sighandler(int sig)
@@ -17,8 +15,6 @@ static void sighandler(int sig)
     (void)sig;
     if (g_conn) ble_stop(g_conn);
 }
-
-/* ── Output helpers ──────────────────────────────────────────────── */
 
 static void timestamp_now(char *buf, size_t size)
 {
@@ -60,11 +56,9 @@ static void print_status_json(const River3Status *s)
     fflush(stdout);
 }
 
-/* ── Monitor callback state ──────────────────────────────────────── */
-
 typedef struct {
     int   format_json;
-    int   grid_was_up;    /* -1=unknown, 0=down, 1=up */
+    int   grid_was_up;
 } MonitorState;
 
 static void on_status(const River3Status *s, void *user)
@@ -73,7 +67,6 @@ static void on_status(const River3Status *s, void *user)
     int grid_up = river3_grid_available(s) ? 1 : 0;
 
     if (ms->grid_was_up >= 0 && grid_up != ms->grid_was_up) {
-        /* State change */
         const char *event = grid_up ? "GRID_RESTORED" : "GRID_LOST";
         char ts[64];
         timestamp_now(ts, sizeof(ts));
@@ -100,8 +93,6 @@ static void on_status(const River3Status *s, void *user)
 
     ms->grid_was_up = grid_up;
 }
-
-/* ── Commands ────────────────────────────────────────────────────── */
 
 static int cmd_scan(int timeout)
 {
@@ -160,7 +151,6 @@ static int cmd_check(const char *address, const char *serial,
     cs.conn = conn;
     g_conn = conn;
 
-    /* Run until first status arrives (or 5s timeout) */
     ble_run(conn, 5);
 
     const River3Status *s = ble_latest_status(conn);
@@ -180,7 +170,7 @@ static int cmd_check(const char *address, const char *serial,
 static int cmd_monitor(const char *address, const char *serial,
                        const char *user_id, int interval, int format_json)
 {
-    (void)interval; /* notifications arrive at device's own rate */
+    (void)interval;
 
     MonitorState ms = {.format_json = format_json, .grid_was_up = -1};
 
@@ -195,15 +185,13 @@ static int cmd_monitor(const char *address, const char *serial,
     printf("Monitoring grid status...\nPress Ctrl+C to stop.\n\n");
     fflush(stdout);
 
-    ble_run(conn, 0); /* run until signal */
+    ble_run(conn, 0);
 
     printf("\nStopping monitor...\n");
     ble_disconnect(conn);
     g_conn = NULL;
     return 0;
 }
-
-/* ── Usage ───────────────────────────────────────────────────────── */
 
 static void usage(const char *prog)
 {
@@ -218,8 +206,6 @@ static void usage(const char *prog)
         "  ECOFLOW_SERIAL     Device serial number\n",
         prog, prog, prog);
 }
-
-/* ── Main ────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv)
 {

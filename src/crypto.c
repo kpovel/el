@@ -8,8 +8,6 @@
 #include <openssl/evp.h>
 #include <openssl/md5.h>
 
-/* ── CRC8-CCITT (poly=0x07, init=0x00) ───────────────────────────── */
-
 uint8_t crc8_ccitt(const uint8_t *data, size_t len)
 {
     uint8_t crc = 0x00;
@@ -24,8 +22,6 @@ uint8_t crc8_ccitt(const uint8_t *data, size_t len)
     }
     return crc;
 }
-
-/* ── CRC16-ARC (poly=0x8005, init=0, reflect in/out) ────────────── */
 
 uint16_t crc16_arc(const uint8_t *data, size_t len)
 {
@@ -42,26 +38,18 @@ uint16_t crc16_arc(const uint8_t *data, size_t len)
     return crc;
 }
 
-/* ── Session key generation ──────────────────────────────────────── */
-
 void generate_session_key(const uint8_t seed[2], const uint8_t srand_bytes[16],
                           uint8_t out[16])
 {
     uint8_t buf[32];
 
-    /* First 16 bytes: two 8-byte little-endian values from keydata table */
     size_t pos = (size_t)seed[0] * 0x10 + (size_t)((seed[1] - 1) & 0xFF) * 0x100;
     memcpy(buf, keydata_get8bytes(pos), 8);
     memcpy(buf + 8, keydata_get8bytes(pos + 8), 8);
-
-    /* Last 16 bytes: sRand directly */
     memcpy(buf + 16, srand_bytes, 16);
 
-    /* MD5 of the 32 bytes */
     md5_hash(buf, 32, out);
 }
-
-/* ── AES-128-CBC with PKCS7 ──────────────────────────────────────── */
 
 uint8_t *aes_encrypt(const uint8_t *data, size_t data_len,
                      const uint8_t key[16], const uint8_t iv[16],
@@ -70,7 +58,6 @@ uint8_t *aes_encrypt(const uint8_t *data, size_t data_len,
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return NULL;
 
-    /* Allocate worst-case: data_len + block_size */
     size_t max_len = data_len + 16;
     uint8_t *out = malloc(max_len);
     if (!out) { EVP_CIPHER_CTX_free(ctx); return NULL; }
@@ -79,7 +66,6 @@ uint8_t *aes_encrypt(const uint8_t *data, size_t data_len,
 
     if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1)
         goto fail;
-    /* PKCS7 padding is enabled by default */
     if (EVP_EncryptUpdate(ctx, out, &len, data, (int)data_len) != 1)
         goto fail;
     total = len;
@@ -128,8 +114,6 @@ fail:
     return NULL;
 }
 
-/* ── MD5 ─────────────────────────────────────────────────────────── */
-
 void md5_hash(const uint8_t *data, size_t len, uint8_t out[16])
 {
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
@@ -139,8 +123,6 @@ void md5_hash(const uint8_t *data, size_t len, uint8_t out[16])
     EVP_DigestFinal_ex(ctx, out, &md_len);
     EVP_MD_CTX_free(ctx);
 }
-
-/* ── Auth payload ────────────────────────────────────────────────── */
 
 void generate_auth_payload(const char *user_id, const char *device_sn,
                            uint8_t out[32])
@@ -157,7 +139,6 @@ void generate_auth_payload(const char *user_id, const char *device_sn,
     md5_hash(buf, total, md5);
     free(buf);
 
-    /* Uppercase hex string as ASCII bytes */
     for (int i = 0; i < 16; i++)
         sprintf((char *)out + i * 2, "%02X", md5[i]);
 }
