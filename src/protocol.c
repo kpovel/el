@@ -260,7 +260,7 @@ bool parse_river3_status(const uint8_t *data, size_t len, River3Status *out)
 
     out->ac_input_voltage = field_float(fields, count, 227);
     out->ac_input_power   = field_float(fields, count, 4);
-    out->ac_output_power  = field_float(fields, count, 243);
+    out->ac_output_power  = field_float(fields, count, 54);
     out->ac_plugged_in    = field_float(fields, count, 227) > 0;
 
     float batt = field_float(fields, count, 262);
