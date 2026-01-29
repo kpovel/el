@@ -256,17 +256,12 @@ size_t protobuf_decode(const uint8_t *data, size_t len,
 static const PBField *find_field(const PBField *fields, size_t count,
                                  uint32_t num)
 {
+    const PBField *last = NULL;
     for (size_t i = 0; i < count; i++) {
         if (fields[i].field_num == num)
-            return &fields[i];
+            last = &fields[i];
     }
-    return NULL;
-}
-
-static uint64_t field_u64(const PBField *fields, size_t count, uint32_t num)
-{
-    const PBField *f = find_field(fields, count, num);
-    return f ? f->value.u64 : 0;
+    return last;
 }
 
 static float field_float(const PBField *fields, size_t count, uint32_t num)
@@ -287,19 +282,19 @@ bool parse_river3_status(const uint8_t *data, size_t len, River3Status *out)
 
     memset(out, 0, sizeof(*out));
 
-    out->ac_input_voltage = (float)field_u64(fields, count, 227);
+    out->ac_input_voltage = field_float(fields, count, 227);
     out->ac_input_power   = field_float(fields, count, 3);
     out->ac_output_power  = field_float(fields, count, 9);
-    out->ac_plugged_in    = field_u64(fields, count, 227) > 0;
+    out->ac_plugged_in    = field_float(fields, count, 227) > 0;
 
     /* battery_level: prefer field 262, fall back to 4 */
-    uint64_t batt = field_u64(fields, count, 262);
+    float batt = field_float(fields, count, 262);
     if (batt == 0)
-        batt = field_u64(fields, count, 4);
+        batt = field_float(fields, count, 4);
     out->battery_level = (int)batt;
 
-    out->battery_temp    = (float)field_u64(fields, count, 258);
-    out->dc_input_power  = field_float(fields, count, 11);
+    out->battery_temp     = field_float(fields, count, 258);
+    out->dc_input_power   = field_float(fields, count, 11);
     out->usb_output_power = field_float(fields, count, 12);
 
     return true;

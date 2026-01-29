@@ -683,6 +683,11 @@ static void process_buffer(BLEConn *conn)
 
         River3Status status;
         if (parse_river3_status(pkt.payload, pkt.payload_len, &status)) {
+            /* Receiving status data means auth succeeded */
+            if (!conn->authenticated) {
+                LOG_INFO("Auth confirmed (status data received)");
+                conn->authenticated = true;
+            }
             conn->latest_status = status;
             conn->has_status = true;
             if (conn->status_cb)
@@ -984,8 +989,61 @@ BLEConn *ble_connect(const char *device_address,
 
     LOG_INFO("Connecting to %s (%s)...", device_address, conn->device_path);
 
-    /* Connect */
+    /* Start discovery so BlueZ creates the device object if needed */
     sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->adapter_path,
+                       ADAPTER_IFACE, "StartDiscovery",
+                       &error, NULL, "");
+    sd_bus_error_free(&error);
+
+    /* Wait for the device object to appear */
+    {
+        struct timespec disc_end;
+        clock_gettime(CLOCK_MONOTONIC, &disc_end);
+        disc_end.tv_sec += 10;
+
+        while (1) {
+            /* Check if device path exists by reading a property */
+            sd_bus_error e2 = SD_BUS_ERROR_NULL;
+            sd_bus_message *prop_msg = NULL;
+            r = sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
+                                    conn->device_path, DEVICE_IFACE,
+                                    "Address", &e2, &prop_msg, "s");
+            sd_bus_error_free(&e2);
+            sd_bus_message_unref(prop_msg);
+            if (r >= 0)
+                break;
+
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec > disc_end.tv_sec ||
+                (now.tv_sec == disc_end.tv_sec &&
+                 now.tv_nsec >= disc_end.tv_nsec)) {
+                LOG_ERR("Device not found within discovery timeout");
+                error = SD_BUS_ERROR_NULL;
+                sd_bus_call_method(conn->bus, BLUEZ_SERVICE,
+                                   conn->adapter_path, ADAPTER_IFACE,
+                                   "StopDiscovery", &error, NULL, "");
+                sd_bus_error_free(&error);
+                ble_disconnect(conn);
+                return NULL;
+            }
+
+            r = sd_bus_process(conn->bus, NULL);
+            if (r < 0) break;
+            if (r == 0) sd_bus_wait(conn->bus, 500000);
+        }
+    }
+
+    /* Stop discovery before connecting */
+    error = SD_BUS_ERROR_NULL;
+    sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->adapter_path,
+                       ADAPTER_IFACE, "StopDiscovery",
+                       &error, NULL, "");
+    sd_bus_error_free(&error);
+
+    /* Connect */
+    error = SD_BUS_ERROR_NULL;
     r = sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->device_path,
                            DEVICE_IFACE, "Connect",
                            &error, NULL, "");

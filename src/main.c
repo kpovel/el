@@ -131,20 +131,36 @@ static int cmd_scan(int timeout)
     return 0;
 }
 
+typedef struct {
+    int format_json;
+    BLEConn *conn;
+} CheckState;
+
+static void on_check_status(const River3Status *s, void *user)
+{
+    CheckState *cs = user;
+    if (cs->format_json)
+        print_status_json(s);
+    else
+        print_status_text(s);
+    ble_stop(cs->conn);
+}
+
 static int cmd_check(const char *address, const char *serial,
                      const char *user_id, int format_json)
 {
-    MonitorState ms = {.format_json = format_json, .grid_was_up = -1};
+    CheckState cs = {.format_json = format_json, .conn = NULL};
 
-    BLEConn *conn = ble_connect(address, serial, user_id, on_status, &ms);
+    BLEConn *conn = ble_connect(address, serial, user_id, on_check_status, &cs);
     if (!conn) {
         fprintf(stderr, "Failed to connect/authenticate\n");
         return 2;
     }
 
+    cs.conn = conn;
     g_conn = conn;
 
-    /* Run event loop for a few seconds to collect data */
+    /* Run until first status arrives (or 5s timeout) */
     ble_run(conn, 5);
 
     const River3Status *s = ble_latest_status(conn);
