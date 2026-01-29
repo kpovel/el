@@ -125,11 +125,14 @@ static int cmd_scan(int timeout)
 typedef struct {
     int format_json;
     BLEConn *conn;
+    bool done;
 } CheckState;
 
 static void on_check_status(const River3Status *s, void *user)
 {
     CheckState *cs = user;
+    if (cs->done) return;
+    cs->done = true;
     if (cs->format_json)
         print_status_json(s);
     else

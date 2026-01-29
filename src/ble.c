@@ -336,17 +336,36 @@ static int send_and_poll(BLEConn *conn, const uint8_t *data, size_t len,
                          uint8_t *resp_buf, size_t resp_size,
                          int timeout_ms)
 {
-
     gatt_notify(conn->bus, conn->notify_path, true);
-
 
     struct timespec ts = {0, 50000000};
     nanosleep(&ts, NULL);
 
+    while (sd_bus_process(conn->bus, NULL) > 0)
+        ;
+
+    uint8_t stale[512];
+    size_t stale_len = 0;
+    {
+        sd_bus_error e = SD_BUS_ERROR_NULL;
+        sd_bus_message *m = NULL;
+        if (sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
+                                conn->notify_path, GATT_CHAR_IFACE,
+                                "Value", &e, &m, "ay") >= 0 && m) {
+            const void *arr = NULL;
+            size_t arr_len = 0;
+            if (sd_bus_message_read_array(m, 'y', &arr, &arr_len) >= 0 &&
+                arr_len > 0 && arr_len <= sizeof(stale)) {
+                memcpy(stale, arr, arr_len);
+                stale_len = arr_len;
+            }
+            sd_bus_message_unref(m);
+        }
+        sd_bus_error_free(&e);
+    }
 
     if (gatt_write(conn->bus, conn->write_path, data, len) < 0)
         return -1;
-
 
     uint64_t deadline = 0;
     {
@@ -367,7 +386,6 @@ static int send_and_poll(BLEConn *conn, const uint8_t *data, size_t len,
         if (r < 0) break;
         if (r > 0) continue;
 
-
         sd_bus_message *prop_msg = NULL;
         sd_bus_error error = SD_BUS_ERROR_NULL;
         r = sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
@@ -379,11 +397,14 @@ static int send_and_poll(BLEConn *conn, const uint8_t *data, size_t len,
             size_t arr_len = 0;
             r = sd_bus_message_read_array(prop_msg, 'y', &arr, &arr_len);
             if (r >= 0 && arr_len > 0) {
-                size_t copy = arr_len < resp_size ? arr_len : resp_size;
-                memcpy(resp_buf, arr, copy);
-                got = (int)copy;
-                sd_bus_message_unref(prop_msg);
-                break;
+                if (arr_len != stale_len ||
+                    memcmp(arr, stale, stale_len) != 0) {
+                    size_t copy = arr_len < resp_size ? arr_len : resp_size;
+                    memcpy(resp_buf, arr, copy);
+                    got = (int)copy;
+                    sd_bus_message_unref(prop_msg);
+                    break;
+                }
             }
             sd_bus_message_unref(prop_msg);
         }
@@ -410,7 +431,6 @@ static bool authenticate(BLEConn *conn)
         return false;
     }
 
-
     uint8_t cmd1[42];
     cmd1[0] = 0x01;
     cmd1[1] = 0x00;
@@ -427,7 +447,6 @@ static bool authenticate(BLEConn *conn)
         return false;
     }
 
-
     size_t payload_len = 0;
     const uint8_t *payload = parse_enc_response(resp, (size_t)rlen, &payload_len);
     if (!payload || payload_len < 43) {
@@ -438,13 +457,11 @@ static bool authenticate(BLEConn *conn)
     int ecdh_size = get_ecdh_size(payload[2]);
     const uint8_t *peer_pub = payload + 3;
 
-
     if (!ecdh_compute(conn->our_key, peer_pub, (size_t)ecdh_size,
                       conn->shared_key, &conn->shared_key_len)) {
         LOG_ERR("ECDH compute failed");
         return false;
     }
-
 
     md5_hash(conn->shared_key, conn->shared_key_len, conn->iv);
 
@@ -1001,17 +1018,30 @@ BLEConn *ble_connect(const char *device_address,
     sd_bus_error_free(&error);
 
 
-    error = SD_BUS_ERROR_NULL;
-    r = sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->device_path,
-                           DEVICE_IFACE, "Connect",
-                           &error, NULL, "");
-    if (r < 0) {
-        LOG_ERR("Connect failed: %s", error.message ? error.message : strerror(-r));
+    bool connected = false;
+    for (int attempt = 0; attempt < 3 && !connected; attempt++) {
+        if (attempt > 0) {
+            LOG_INFO("Retrying connection (attempt %d)...", attempt + 1);
+            struct timespec wait = {2, 0};
+            nanosleep(&wait, NULL);
+        }
+        error = SD_BUS_ERROR_NULL;
+        r = sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->device_path,
+                               DEVICE_IFACE, "Connect",
+                               &error, NULL, "");
+        if (r >= 0) {
+            connected = true;
+        } else {
+            if (attempt == 2)
+                LOG_ERR("Connect failed: %s",
+                        error.message ? error.message : strerror(-r));
+        }
         sd_bus_error_free(&error);
+    }
+    if (!connected) {
         ble_disconnect(conn);
         return NULL;
     }
-    sd_bus_error_free(&error);
 
     LOG_INFO("Connected, waiting for services...");
 
@@ -1097,6 +1127,7 @@ int ble_run(BLEConn *conn, int timeout_sec)
         sd_bus_wait(conn->bus, 1000000);
     }
 
+    gatt_notify(conn->bus, conn->notify_path, false);
     return 0;
 }
 
@@ -1133,6 +1164,28 @@ void ble_disconnect(BLEConn *conn)
                            DEVICE_IFACE, "Disconnect",
                            &error, NULL, "");
         sd_bus_error_free(&error);
+
+        struct timespec disc_end;
+        clock_gettime(CLOCK_MONOTONIC, &disc_end);
+        disc_end.tv_sec += 2;
+        while (1) {
+            sd_bus_error e2 = SD_BUS_ERROR_NULL;
+            int connected = 0;
+            int r = sd_bus_get_property_trivial(conn->bus, BLUEZ_SERVICE,
+                                                conn->device_path, DEVICE_IFACE,
+                                                "Connected", &e2, 'b', &connected);
+            sd_bus_error_free(&e2);
+            if (r < 0 || !connected) break;
+
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec > disc_end.tv_sec) break;
+
+            r = sd_bus_process(conn->bus, NULL);
+            if (r < 0) break;
+            if (r == 0) sd_bus_wait(conn->bus, 100000);
+        }
+
     }
 
     if (conn->our_key) {
