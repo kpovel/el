@@ -1,22 +1,26 @@
-CC      ?= gcc
-CFLAGS  ?= -Wall -Wextra -Wpedantic -O2 -std=c11 -D_GNU_SOURCE
-LDFLAGS ?=
-LIBS     = -lsystemd -lssl -lcrypto
+ADDRESS ?=
+SERIAL  ?=
+USER_ID ?=
 
-SRCDIR = src
-SRCS   = $(SRCDIR)/main.c $(SRCDIR)/ble.c $(SRCDIR)/crypto.c $(SRCDIR)/protocol.c $(SRCDIR)/keydata.c
-OBJS   = $(SRCS:.c=.o)
-BIN    = grid_monitor
+all: build
 
-all: $(BIN)
+build:
+	@test -n "$(ADDRESS)" || { echo "Set ADDRESS"; exit 1; }
+	@test -n "$(SERIAL)"  || { echo "Set SERIAL"; exit 1; }
+	@test -n "$(USER_ID)" || { echo "Set USER_ID"; exit 1; }
+	cmake -B build \
+	  -DECOFLOW_ADDRESS="$(ADDRESS)" \
+	  -DECOFLOW_SERIAL="$(SERIAL)"   \
+	  -DECOFLOW_USER_ID="$(USER_ID)"
+	@# Patch btstack hci.c: le_advertisements_state renamed to le_advertisements_todo in SDK 2.2.0
+	@sed -i 's/le_advertisements_state/le_advertisements_todo/g' \
+	  build/_deps/pico_sdk-src/lib/btstack/src/hci.c 2>/dev/null || true
+	cmake --build build -j$$(nproc)
 
-$(BIN): $(OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
-
-$(SRCDIR)/%.o: $(SRCDIR)/%.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+flash: build
+	./flash.sh
 
 clean:
-	rm -f $(OBJS) $(BIN)
+	rm -rf build
 
-.PHONY: all clean
+.PHONY: all build flash clean

@@ -5,71 +5,44 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
-#include <systemd/sd-bus.h>
+#include "btstack.h"
 
-#include <openssl/evp.h>
-#include <openssl/param_build.h>
-#include <openssl/core_names.h>
-#include <openssl/ec.h>
-#include <openssl/bn.h>
+#define LOG_INFO(...)  printf("[INFO] " __VA_ARGS__), printf("\n")
+#define LOG_ERR(...)   printf("[ERROR] " __VA_ARGS__), printf("\n")
 
-#define BLUEZ_SERVICE       "org.bluez"
-#define ADAPTER_IFACE       "org.bluez.Adapter1"
-#define DEVICE_IFACE        "org.bluez.Device1"
-#define GATT_CHAR_IFACE     "org.bluez.GattCharacteristic1"
-#define GATT_SERVICE_IFACE  "org.bluez.GattService1"
-#define DBUS_OM_IFACE       "org.freedesktop.DBus.ObjectManager"
-#define DBUS_PROP_IFACE     "org.freedesktop.DBus.Properties"
-
-#define NOTIFY_UUID "00000003-0000-1000-8000-00805f9b34fb"
-#define WRITE_UUID  "00000002-0000-1000-8000-00805f9b34fb"
-
-#define ECOFLOW_MFR_ID      0xB5B5
-
-static const char *RIVER3_PREFIXES[] = {
-    "R631", "R651", "R653", "R654", "R655", NULL
+enum ble_state {
+    BLE_IDLE,
+    BLE_SCANNING,
+    BLE_CONNECTING,
+    BLE_DISC_CHARS,
+    BLE_AUTH_PUBKEY,
+    BLE_AUTH_SESSION_KEY,
+    BLE_AUTH_CHECK,
+    BLE_AUTH_PAYLOAD,
+    BLE_AUTHENTICATED,
 };
 
-#define LOG_INFO(...)  fprintf(stderr, "[INFO] " __VA_ARGS__), fprintf(stderr, "\n")
-#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__), fprintf(stderr, "\n")
-#define LOG_DBG(...)   ((void)0)
+static struct {
+    enum ble_state state;
+    hci_con_handle_t conn_handle;
 
-struct BLEConn {
-    sd_bus *bus;
-    char    device_path[256];
-    char    notify_path[256];
-    char    write_path[256];
-    char    adapter_path[64];
+    char address[18], serial[64], user_id[64];
+    bd_addr_t target_addr;
 
+    gatt_client_service_t         service;
+    gatt_client_characteristic_t  notify_char, write_char;
+    gatt_client_notification_t    notify_listener;
+    bool found_notify, found_write;
 
-    char    device_sn[64];
-    char    user_id[64];
-    bool    authenticated;
-    bool    running;
+    uint8_t our_pubkey[40], our_privkey[20];
+    uint8_t shared_key[20]; size_t shared_key_len;
+    uint8_t iv[16], session_key[16];
+    bool has_session_key, authenticated;
 
-
-    EVP_PKEY *our_key;
-    uint8_t   shared_key[20];
-    size_t    shared_key_len;
-    uint8_t   iv[16];
-    uint8_t   session_key[16];
-    bool      has_session_key;
-
-
-    uint8_t   recv_buf[4096];
-    size_t    recv_len;
-    River3Status latest_status;
-    bool         has_status;
-
-
-    ble_status_cb  status_cb;
-    void          *status_cb_user;
-
-
-    sd_bus_slot *prop_slot;
-};
+    uint8_t recv_buf[4096]; size_t recv_len;
+    ble_status_cb cb; void *cb_user;
+} g;
 
 static int get_ecdh_size(int curve_num)
 {
@@ -82,234 +55,136 @@ static int get_ecdh_size(int curve_num)
     }
 }
 
-static void addr_to_path(const char *addr, char *out)
+static void parse_addr(const char *str, bd_addr_t addr)
 {
-    strcpy(out, "dev_");
-    size_t j = 4;
-    for (size_t i = 0; addr[i]; i++) {
-        out[j++] = (addr[i] == ':') ? '_' : addr[i];
+    unsigned int a[6];
+    sscanf(str, "%x:%x:%x:%x:%x:%x",
+           &a[0], &a[1], &a[2], &a[3], &a[4], &a[5]);
+    for (int i = 0; i < 6; i++) addr[i] = (uint8_t)a[i];
+}
+
+static void reset_state(void)
+{
+    g.state = BLE_IDLE;
+    g.conn_handle = HCI_CON_HANDLE_INVALID;
+    g.found_notify = false;
+    g.found_write = false;
+    g.has_session_key = false;
+    g.authenticated = false;
+    g.recv_len = 0;
+    memset(&g.service, 0, sizeof(g.service));
+    memset(&g.notify_char, 0, sizeof(g.notify_char));
+    memset(&g.write_char, 0, sizeof(g.write_char));
+}
+
+static void start_scan(void)
+{
+    g.state = BLE_SCANNING;
+    gap_set_scan_params(1, 0x0030, 0x0030, 0);
+    gap_start_scan();
+    LOG_INFO("Scanning for %s...", g.address);
+}
+
+static void ble_packet_handler(uint8_t packet_type, uint16_t channel,
+                               uint8_t *packet, uint16_t size);
+
+static void gatt_write_value(const uint8_t *data, size_t len)
+{
+    gatt_client_write_value_of_characteristic(
+        ble_packet_handler, g.conn_handle, g.write_char.value_handle,
+        (uint16_t)len, (uint8_t *)data);
+}
+
+static void send_auth_pubkey(void)
+{
+    g.state = BLE_AUTH_PUBKEY;
+    LOG_INFO("Step 1: Public key exchange");
+
+    if (!ecdh_generate_keypair(g.our_pubkey, g.our_privkey)) {
+        LOG_ERR("Failed to generate ECDH key");
+        return;
     }
-    out[j] = '\0';
+
+    uint8_t cmd[42];
+    cmd[0] = 0x01;
+    cmd[1] = 0x00;
+    memcpy(cmd + 2, g.our_pubkey, 40);
+
+    size_t enc_len = 0;
+    uint8_t *pkt = enc_packet_build(cmd, 42, FRAME_TYPE_COMMAND,
+                                    NULL, NULL, &enc_len);
+    if (!pkt) return;
+    gatt_write_value(pkt, enc_len);
+    free(pkt);
 }
 
-static bool find_char_path(sd_bus *bus, const char *dev_path,
-                           const char *uuid, char *out, size_t out_size)
+static void send_session_key_request(void)
 {
-    sd_bus_message *reply = NULL;
-    int r = sd_bus_call_method(bus, BLUEZ_SERVICE, "/",
-                               DBUS_OM_IFACE, "GetManagedObjects",
-                               NULL, &reply, "");
-    if (r < 0) return false;
+    g.state = BLE_AUTH_SESSION_KEY;
+    LOG_INFO("Step 2: Request session key");
 
-
-    r = sd_bus_message_enter_container(reply, 'a', "{oa{sa{sv}}}");
-    if (r < 0) goto out;
-
-    while (sd_bus_message_enter_container(reply, 'e', "oa{sa{sv}}") > 0) {
-        const char *path = NULL;
-        sd_bus_message_read(reply, "o", &path);
-
-
-        if (!path || strncmp(path, dev_path, strlen(dev_path)) != 0) {
-            sd_bus_message_skip(reply, "a{sa{sv}}");
-            sd_bus_message_exit_container(reply);
-            continue;
-        }
-
-
-        sd_bus_message_enter_container(reply, 'a', "{sa{sv}}");
-        while (sd_bus_message_enter_container(reply, 'e', "sa{sv}") > 0) {
-            const char *iface = NULL;
-            sd_bus_message_read(reply, "s", &iface);
-
-            if (iface && strcmp(iface, GATT_CHAR_IFACE) == 0) {
-
-                sd_bus_message_enter_container(reply, 'a', "{sv}");
-                while (sd_bus_message_enter_container(reply, 'e', "sv") > 0) {
-                    const char *prop = NULL;
-                    sd_bus_message_read(reply, "s", &prop);
-                    if (prop && strcmp(prop, "UUID") == 0) {
-                        const char *val = NULL;
-                        sd_bus_message_read(reply, "v", "s", &val);
-                        if (val && strcasecmp(val, uuid) == 0) {
-                            snprintf(out, out_size, "%s", path);
-                            sd_bus_message_exit_container(reply);
-                            sd_bus_message_exit_container(reply);
-                            sd_bus_message_exit_container(reply);
-                            sd_bus_message_exit_container(reply);
-                            sd_bus_message_exit_container(reply);
-                            sd_bus_message_exit_container(reply);
-                            sd_bus_message_unref(reply);
-                            return true;
-                        }
-                    } else {
-                        sd_bus_message_skip(reply, "v");
-                    }
-                    sd_bus_message_exit_container(reply);
-                }
-                sd_bus_message_exit_container(reply);
-            } else {
-                sd_bus_message_skip(reply, "a{sv}");
-            }
-            sd_bus_message_exit_container(reply);
-        }
-        sd_bus_message_exit_container(reply);
-        sd_bus_message_exit_container(reply);
-    }
-    sd_bus_message_exit_container(reply);
-
-out:
-    sd_bus_message_unref(reply);
-    return false;
+    uint8_t cmd = 0x02;
+    size_t enc_len = 0;
+    uint8_t *pkt = enc_packet_build(&cmd, 1, FRAME_TYPE_COMMAND,
+                                    NULL, NULL, &enc_len);
+    if (!pkt) return;
+    gatt_write_value(pkt, enc_len);
+    free(pkt);
 }
 
-static int gatt_write(sd_bus *bus, const char *char_path,
-                      const uint8_t *data, size_t len)
+static void send_auth_check(void)
 {
-    sd_bus_message *msg = NULL;
-    int r = sd_bus_message_new_method_call(bus, &msg, BLUEZ_SERVICE,
-                                           char_path, GATT_CHAR_IFACE,
-                                           "WriteValue");
-    if (r < 0) return r;
+    g.state = BLE_AUTH_CHECK;
+    LOG_INFO("Step 3: Check auth status");
 
-    r = sd_bus_message_append_array(msg, 'y', data, len);
-    if (r < 0) { sd_bus_message_unref(msg); return r; }
+    Packet p;
+    packet_init(&p);
+    p.src     = 0x21;
+    p.dst     = 0x35;
+    p.cmd_set = 0x35;
+    p.cmd_id  = 0x89;
+    p.dsrc    = 0x01;
+    p.ddst    = 0x01;
 
+    uint8_t buf[64];
+    size_t len = packet_to_bytes(&p, buf, sizeof(buf));
 
-    r = sd_bus_message_open_container(msg, 'a', "{sv}");
-    if (r < 0) { sd_bus_message_unref(msg); return r; }
-    r = sd_bus_message_close_container(msg);
-    if (r < 0) { sd_bus_message_unref(msg); return r; }
-
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    r = sd_bus_call(bus, msg, 5000000, &error, NULL);
-    if (r < 0)
-        LOG_ERR("WriteValue failed: %s", error.message ? error.message : "?");
-    sd_bus_error_free(&error);
-    sd_bus_message_unref(msg);
-    return r;
+    size_t enc_len = 0;
+    uint8_t *pkt = enc_packet_build(buf, len, FRAME_TYPE_PROTOCOL,
+                                    g.session_key, g.iv, &enc_len);
+    if (!pkt) return;
+    gatt_write_value(pkt, enc_len);
+    free(pkt);
 }
 
-static int gatt_notify(sd_bus *bus, const char *char_path, bool start)
+static void send_auth_payload_pkt(void)
 {
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    int r = sd_bus_call_method(bus, BLUEZ_SERVICE, char_path,
-                               GATT_CHAR_IFACE,
-                               start ? "StartNotify" : "StopNotify",
-                               &error, NULL, "");
-    if (r < 0 && start)
-        LOG_ERR("%s failed: %s",
-                start ? "StartNotify" : "StopNotify",
-                error.message ? error.message : "?");
-    sd_bus_error_free(&error);
-    return r;
-}
+    g.state = BLE_AUTH_PAYLOAD;
+    LOG_INFO("Step 4: Authenticate");
 
-static EVP_PKEY *ecdh_generate(uint8_t pub_out[40])
-{
-    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
-    if (!pctx) return NULL;
+    uint8_t auth_payload[32];
+    generate_auth_payload(g.user_id, g.serial, auth_payload);
 
-    EVP_PKEY *pkey = NULL;
+    Packet p;
+    packet_init(&p);
+    p.src         = 0x21;
+    p.dst         = 0x35;
+    p.cmd_set     = 0x35;
+    p.cmd_id      = 0x86;
+    p.dsrc        = 0x01;
+    p.ddst        = 0x01;
+    p.payload     = auth_payload;
+    p.payload_len = 32;
 
-    if (EVP_PKEY_keygen_init(pctx) <= 0)
-        goto fail;
+    uint8_t buf[128];
+    size_t len = packet_to_bytes(&p, buf, sizeof(buf));
 
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
-                                         (char *)"secp160r1", 0),
-        OSSL_PARAM_construct_end()
-    };
-    if (EVP_PKEY_CTX_set_params(pctx, params) <= 0)
-        goto fail;
-
-    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
-        goto fail;
-
-
-    size_t pub_len = 0;
-    if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
-                                        NULL, 0, &pub_len) <= 0)
-        goto fail_key;
-
-    uint8_t pub_buf[65];
-    if (pub_len > sizeof(pub_buf))
-        goto fail_key;
-    if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
-                                        pub_buf, sizeof(pub_buf), &pub_len) <= 0)
-        goto fail_key;
-
-
-    if (pub_len >= 41 && pub_buf[0] == 0x04)
-        memcpy(pub_out, pub_buf + 1, 40);
-    else
-        memcpy(pub_out, pub_buf, pub_len < 40 ? pub_len : 40);
-
-    EVP_PKEY_CTX_free(pctx);
-    return pkey;
-
-fail_key:
-    EVP_PKEY_free(pkey);
-fail:
-    EVP_PKEY_CTX_free(pctx);
-    return NULL;
-}
-
-static bool ecdh_compute(EVP_PKEY *our_key, const uint8_t *peer_pub,
-                         size_t peer_len, uint8_t *out, size_t *out_len)
-{
-
-    uint8_t point[65];
-    point[0] = 0x04;
-    memcpy(point + 1, peer_pub, peer_len);
-    size_t point_len = 1 + peer_len;
-
-
-    OSSL_PARAM_BLD *bld = OSSL_PARAM_BLD_new();
-    if (!bld) return false;
-
-    OSSL_PARAM_BLD_push_utf8_string(bld, OSSL_PKEY_PARAM_GROUP_NAME,
-                                    "secp160r1", 0);
-    OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PUB_KEY,
-                                     point, point_len);
-    OSSL_PARAM *params = OSSL_PARAM_BLD_to_param(bld);
-    OSSL_PARAM_BLD_free(bld);
-    if (!params) return false;
-
-    EVP_PKEY_CTX *fromdata_ctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
-    EVP_PKEY *peer_pkey = NULL;
-    bool ok = false;
-
-    if (!fromdata_ctx) goto done_params;
-    if (EVP_PKEY_fromdata_init(fromdata_ctx) <= 0) goto done_fromdata;
-    if (EVP_PKEY_fromdata(fromdata_ctx, &peer_pkey,
-                          EVP_PKEY_PUBLIC_KEY, params) <= 0)
-        goto done_fromdata;
-
-
-    EVP_PKEY_CTX *derive_ctx = EVP_PKEY_CTX_new(our_key, NULL);
-    if (!derive_ctx) goto done_peer;
-
-    if (EVP_PKEY_derive_init(derive_ctx) <= 0) goto done_derive;
-    if (EVP_PKEY_derive_set_peer(derive_ctx, peer_pkey) <= 0) goto done_derive;
-
-    size_t slen = 0;
-    if (EVP_PKEY_derive(derive_ctx, NULL, &slen) <= 0) goto done_derive;
-    if (slen > 20) slen = 20;
-    if (EVP_PKEY_derive(derive_ctx, out, &slen) <= 0) goto done_derive;
-
-    *out_len = slen;
-    ok = true;
-
-done_derive:
-    EVP_PKEY_CTX_free(derive_ctx);
-done_peer:
-    EVP_PKEY_free(peer_pkey);
-done_fromdata:
-    EVP_PKEY_CTX_free(fromdata_ctx);
-done_params:
-    OSSL_PARAM_free(params);
-    return ok;
+    size_t enc_len = 0;
+    uint8_t *pkt = enc_packet_build(buf, len, FRAME_TYPE_PROTOCOL,
+                                    g.session_key, g.iv, &enc_len);
+    if (!pkt) return;
+    gatt_write_value(pkt, enc_len);
+    free(pkt);
 }
 
 static const uint8_t *parse_enc_response(const uint8_t *data, size_t len,
@@ -332,172 +207,48 @@ static const uint8_t *parse_enc_response(const uint8_t *data, size_t len,
     return payload;
 }
 
-static int send_and_poll(BLEConn *conn, const uint8_t *data, size_t len,
-                         uint8_t *resp_buf, size_t resp_size,
-                         int timeout_ms)
+static void handle_pubkey_response(const uint8_t *data, size_t len)
 {
-    gatt_notify(conn->bus, conn->notify_path, true);
-
-    struct timespec ts = {0, 50000000};
-    nanosleep(&ts, NULL);
-
-    while (sd_bus_process(conn->bus, NULL) > 0)
-        ;
-
-    uint8_t stale[512];
-    size_t stale_len = 0;
-    {
-        sd_bus_error e = SD_BUS_ERROR_NULL;
-        sd_bus_message *m = NULL;
-        if (sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
-                                conn->notify_path, GATT_CHAR_IFACE,
-                                "Value", &e, &m, "ay") >= 0 && m) {
-            const void *arr = NULL;
-            size_t arr_len = 0;
-            if (sd_bus_message_read_array(m, 'y', &arr, &arr_len) >= 0 &&
-                arr_len > 0 && arr_len <= sizeof(stale)) {
-                memcpy(stale, arr, arr_len);
-                stale_len = arr_len;
-            }
-            sd_bus_message_unref(m);
-        }
-        sd_bus_error_free(&e);
-    }
-
-    if (gatt_write(conn->bus, conn->write_path, data, len) < 0)
-        return -1;
-
-    uint64_t deadline = 0;
-    {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        deadline = (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000
-                   + (uint64_t)timeout_ms;
-    }
-
-    int got = -1;
-    while (1) {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        uint64_t now_ms = (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
-        if (now_ms >= deadline) break;
-
-        int r = sd_bus_process(conn->bus, NULL);
-        if (r < 0) break;
-        if (r > 0) continue;
-
-        sd_bus_message *prop_msg = NULL;
-        sd_bus_error error = SD_BUS_ERROR_NULL;
-        r = sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
-                                conn->notify_path, GATT_CHAR_IFACE,
-                                "Value", &error, &prop_msg, "ay");
-        sd_bus_error_free(&error);
-        if (r >= 0 && prop_msg) {
-            const void *arr = NULL;
-            size_t arr_len = 0;
-            r = sd_bus_message_read_array(prop_msg, 'y', &arr, &arr_len);
-            if (r >= 0 && arr_len > 0) {
-                if (arr_len != stale_len ||
-                    memcmp(arr, stale, stale_len) != 0) {
-                    size_t copy = arr_len < resp_size ? arr_len : resp_size;
-                    memcpy(resp_buf, arr, copy);
-                    got = (int)copy;
-                    sd_bus_message_unref(prop_msg);
-                    break;
-                }
-            }
-            sd_bus_message_unref(prop_msg);
-        }
-
-        uint64_t remain = deadline - now_ms;
-        if (remain > 200) remain = 200;
-        sd_bus_wait(conn->bus, remain * 1000);
-    }
-
-    gatt_notify(conn->bus, conn->notify_path, false);
-    return got;
-}
-
-static bool authenticate(BLEConn *conn)
-{
-    uint8_t resp[512];
-
-
-    LOG_INFO("Step 1: Public key exchange");
-    uint8_t our_pub[40];
-    conn->our_key = ecdh_generate(our_pub);
-    if (!conn->our_key) {
-        LOG_ERR("Failed to generate ECDH key");
-        return false;
-    }
-
-    uint8_t cmd1[42];
-    cmd1[0] = 0x01;
-    cmd1[1] = 0x00;
-    memcpy(cmd1 + 2, our_pub, 40);
-
-    size_t enc_len = 0;
-    uint8_t *pkt1 = enc_packet_build(cmd1, 42, FRAME_TYPE_COMMAND, NULL, NULL, &enc_len);
-    if (!pkt1) return false;
-
-    int rlen = send_and_poll(conn, pkt1, enc_len, resp, sizeof(resp), 5000);
-    free(pkt1);
-    if (rlen <= 0) {
-        LOG_ERR("No response to public key exchange");
-        return false;
-    }
-
     size_t payload_len = 0;
-    const uint8_t *payload = parse_enc_response(resp, (size_t)rlen, &payload_len);
+    const uint8_t *payload = parse_enc_response(data, len, &payload_len);
     if (!payload || payload_len < 43) {
-        LOG_ERR("Invalid public key response (%d bytes)", rlen);
-        return false;
+        LOG_ERR("Invalid public key response");
+        return;
     }
 
-    int ecdh_size = get_ecdh_size(payload[2]);
+    (void)get_ecdh_size(payload[2]);
     const uint8_t *peer_pub = payload + 3;
 
-    if (!ecdh_compute(conn->our_key, peer_pub, (size_t)ecdh_size,
-                      conn->shared_key, &conn->shared_key_len)) {
+    if (!ecdh_compute_shared(peer_pub, g.our_privkey,
+                             g.shared_key, &g.shared_key_len)) {
         LOG_ERR("ECDH compute failed");
-        return false;
+        return;
     }
 
-    md5_hash(conn->shared_key, conn->shared_key_len, conn->iv);
-
-
-    if (conn->shared_key_len > 16)
-        conn->shared_key_len = 16;
+    md5_hash(g.shared_key, g.shared_key_len, g.iv);
+    if (g.shared_key_len > 16)
+        g.shared_key_len = 16;
 
     LOG_INFO("Shared key established");
+    send_session_key_request();
+}
 
-
-    LOG_INFO("Step 2: Request session key");
-    uint8_t cmd2 = 0x02;
-    uint8_t *pkt2 = enc_packet_build(&cmd2, 1, FRAME_TYPE_COMMAND, NULL, NULL, &enc_len);
-    if (!pkt2) return false;
-
-    rlen = send_and_poll(conn, pkt2, enc_len, resp, sizeof(resp), 5000);
-    free(pkt2);
-    if (rlen <= 0) {
-        LOG_ERR("No response to key info request");
-        return false;
-    }
-
-    payload = parse_enc_response(resp, (size_t)rlen, &payload_len);
+static void handle_session_key_response(const uint8_t *data, size_t len)
+{
+    size_t payload_len = 0;
+    const uint8_t *payload = parse_enc_response(data, len, &payload_len);
     if (!payload || payload_len < 2 || payload[0] != 0x02) {
         LOG_ERR("Unexpected key info response");
-        return false;
+        return;
     }
-
 
     size_t dec_len = 0;
     uint8_t *dec = aes_decrypt(payload + 1, payload_len - 1,
-                               conn->shared_key, conn->iv, &dec_len);
+                               g.shared_key, g.iv, &dec_len);
     if (!dec || dec_len < 18) {
         LOG_ERR("Failed to decrypt key info");
         free(dec);
-        return false;
+        return;
     }
 
     uint8_t srand_bytes[16];
@@ -506,121 +257,61 @@ static bool authenticate(BLEConn *conn)
     memcpy(seed, dec + 16, 2);
     free(dec);
 
-    generate_session_key(seed, srand_bytes, conn->session_key);
-    conn->has_session_key = true;
+    generate_session_key(seed, srand_bytes, g.session_key);
+    g.has_session_key = true;
     LOG_INFO("Session key generated");
 
-
-    LOG_INFO("Step 3: Check auth status");
-    Packet p3;
-    packet_init(&p3);
-    p3.src     = 0x21;
-    p3.dst     = 0x35;
-    p3.cmd_set = 0x35;
-    p3.cmd_id  = 0x89;
-    p3.dsrc    = 0x01;
-    p3.ddst    = 0x01;
-
-    uint8_t p3buf[64];
-    size_t p3len = packet_to_bytes(&p3, p3buf, sizeof(p3buf));
-
-    uint8_t *pkt3 = enc_packet_build(p3buf, p3len, FRAME_TYPE_PROTOCOL,
-                                     conn->session_key, conn->iv, &enc_len);
-    if (!pkt3) return false;
-
-
-    gatt_notify(conn->bus, conn->notify_path, true);
-    struct timespec ts50 = {0, 50000000};
-    nanosleep(&ts50, NULL);
-    gatt_write(conn->bus, conn->write_path, pkt3, enc_len);
-    free(pkt3);
-
-
-    struct timespec ts = {1, 0};
-    nanosleep(&ts, NULL);
-
-
-    LOG_INFO("Step 4: Authenticate");
-    uint8_t auth_payload[32];
-    generate_auth_payload(conn->user_id, conn->device_sn, auth_payload);
-
-    Packet p4;
-    packet_init(&p4);
-    p4.src         = 0x21;
-    p4.dst         = 0x35;
-    p4.cmd_set     = 0x35;
-    p4.cmd_id      = 0x86;
-    p4.dsrc        = 0x01;
-    p4.ddst        = 0x01;
-    p4.payload     = auth_payload;
-    p4.payload_len = 32;
-
-    uint8_t p4buf[128];
-    size_t p4len = packet_to_bytes(&p4, p4buf, sizeof(p4buf));
-
-    uint8_t *pkt4 = enc_packet_build(p4buf, p4len, FRAME_TYPE_PROTOCOL,
-                                     conn->session_key, conn->iv, &enc_len);
-    if (!pkt4) return false;
-
-
-    gatt_write(conn->bus, conn->write_path, pkt4, enc_len);
-    free(pkt4);
-
-
-    {
-        struct timespec deadline_ts;
-        clock_gettime(CLOCK_MONOTONIC, &deadline_ts);
-        uint64_t deadline = (uint64_t)deadline_ts.tv_sec * 1000 +
-                            (uint64_t)deadline_ts.tv_nsec / 1000000 + 3000;
-
-        while (!conn->authenticated) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            uint64_t now_ms = (uint64_t)now.tv_sec * 1000 +
-                              (uint64_t)now.tv_nsec / 1000000;
-            if (now_ms >= deadline) break;
-
-            int r = sd_bus_process(conn->bus, NULL);
-            if (r < 0) break;
-            if (r == 0)
-                sd_bus_wait(conn->bus, 100000);
-        }
-    }
-
-    return conn->authenticated;
+    send_auth_check();
 }
 
-static void process_buffer(BLEConn *conn)
+static void process_buffer(void)
 {
-    while (conn->recv_len >= 8 &&
-           conn->recv_buf[0] == ENC_PACKET_PREFIX_0 &&
-           conn->recv_buf[1] == ENC_PACKET_PREFIX_1) {
+    while (g.recv_len >= 8 &&
+           g.recv_buf[0] == ENC_PACKET_PREFIX_0 &&
+           g.recv_buf[1] == ENC_PACKET_PREFIX_1) {
 
-        uint16_t plen = (uint16_t)conn->recv_buf[4] |
-                        ((uint16_t)conn->recv_buf[5] << 8);
+        uint16_t plen = (uint16_t)g.recv_buf[4] |
+                        ((uint16_t)g.recv_buf[5] << 8);
         size_t data_end = 6 + plen;
 
-        if (conn->recv_len < data_end)
+        if (g.recv_len < data_end)
             break;
 
-        const uint8_t *enc_payload = conn->recv_buf + 6;
+        /* During auth handshake, route raw frames to auth handlers */
+        if (g.state == BLE_AUTH_PUBKEY) {
+            handle_pubkey_response(g.recv_buf, data_end);
+            size_t remaining = g.recv_len - data_end;
+            if (remaining > 0)
+                memmove(g.recv_buf, g.recv_buf + data_end, remaining);
+            g.recv_len = remaining;
+            continue;
+        }
+
+        if (g.state == BLE_AUTH_SESSION_KEY) {
+            handle_session_key_response(g.recv_buf, data_end);
+            size_t remaining = g.recv_len - data_end;
+            if (remaining > 0)
+                memmove(g.recv_buf, g.recv_buf + data_end, remaining);
+            g.recv_len = remaining;
+            continue;
+        }
+
         size_t enc_payload_len = plen - 2;
+        uint8_t enc_copy[4096];
+        memcpy(enc_copy, g.recv_buf + 6, enc_payload_len);
 
-
-        size_t remaining = conn->recv_len - data_end;
+        size_t remaining = g.recv_len - data_end;
         if (remaining > 0)
-            memmove(conn->recv_buf, conn->recv_buf + data_end, remaining);
-        conn->recv_len = remaining;
+            memmove(g.recv_buf, g.recv_buf + data_end, remaining);
+        g.recv_len = remaining;
 
-
-        if (!conn->has_session_key)
+        if (!g.has_session_key)
             continue;
 
         size_t dec_len = 0;
-        uint8_t *dec = aes_decrypt(enc_payload, enc_payload_len,
-                                   conn->session_key, conn->iv, &dec_len);
+        uint8_t *dec = aes_decrypt(enc_copy, enc_payload_len,
+                                   g.session_key, g.iv, &dec_len);
         if (!dec) continue;
-
 
         Packet pkt;
         if (!packet_from_bytes(dec, dec_len, &pkt)) {
@@ -629,11 +320,11 @@ static void process_buffer(BLEConn *conn)
         }
         free(dec);
 
-
         if (pkt.src == 0x35 && pkt.cmd_set == 0x35 && pkt.cmd_id == 0x86) {
             if (pkt.payload_len == 1 && pkt.payload[0] == 0x00) {
                 LOG_INFO("Auth confirmed!");
-                conn->authenticated = true;
+                g.authenticated = true;
+                g.state = BLE_AUTHENTICATED;
             } else {
                 LOG_ERR("Auth rejected");
             }
@@ -641,19 +332,16 @@ static void process_buffer(BLEConn *conn)
             continue;
         }
 
-
         if (pkt.cmd_set != 0xFE || pkt.cmd_id != 0x15) {
             free(pkt.payload);
             continue;
         }
-
 
         uint8_t xor_key = pkt.seq[0];
         if (xor_key != 0 && pkt.payload) {
             for (size_t i = 0; i < pkt.payload_len; i++)
                 pkt.payload[i] ^= xor_key;
         }
-
 
         if (pkt.payload_len < 50 || !pkt.payload || pkt.payload[0] != 0x08) {
             free(pkt.payload);
@@ -662,541 +350,204 @@ static void process_buffer(BLEConn *conn)
 
         River3Status status;
         if (parse_river3_status(pkt.payload, pkt.payload_len, &status)) {
-
-            if (!conn->authenticated) {
+            if (!g.authenticated) {
                 LOG_INFO("Auth confirmed (status data received)");
-                conn->authenticated = true;
+                g.authenticated = true;
+                g.state = BLE_AUTHENTICATED;
             }
-            conn->latest_status = status;
-            conn->has_status = true;
-            if (conn->status_cb)
-                conn->status_cb(&status, conn->status_cb_user);
+            if (g.cb)
+                g.cb(&status, g.cb_user);
         }
 
         free(pkt.payload);
     }
 }
 
-static int on_properties_changed(sd_bus_message *msg, void *userdata,
-                                 sd_bus_error *err)
+static btstack_timer_source_t auth_payload_timer;
+
+static void auth_payload_timer_handler(btstack_timer_source_t *ts)
 {
-    (void)err;
-    BLEConn *conn = userdata;
-
-    const char *iface = NULL;
-    int r = sd_bus_message_read(msg, "s", &iface);
-    if (r < 0 || !iface) return 0;
-    if (strcmp(iface, GATT_CHAR_IFACE) != 0) return 0;
-
-
-    r = sd_bus_message_enter_container(msg, 'a', "{sv}");
-    if (r < 0) return 0;
-
-    while (sd_bus_message_enter_container(msg, 'e', "sv") > 0) {
-        const char *prop = NULL;
-        sd_bus_message_read(msg, "s", &prop);
-
-        if (prop && strcmp(prop, "Value") == 0) {
-            sd_bus_message_enter_container(msg, 'v', "ay");
-            const void *arr = NULL;
-            size_t arr_len = 0;
-            sd_bus_message_read_array(msg, 'y', &arr, &arr_len);
-
-            if (arr && arr_len > 0) {
-                size_t space = sizeof(conn->recv_buf) - conn->recv_len;
-                size_t copy = arr_len < space ? arr_len : space;
-                memcpy(conn->recv_buf + conn->recv_len, arr, copy);
-                conn->recv_len += copy;
-                process_buffer(conn);
-            }
-
-            sd_bus_message_exit_container(msg);
-        } else {
-            sd_bus_message_skip(msg, "v");
-        }
-        sd_bus_message_exit_container(msg);
-    }
-    sd_bus_message_exit_container(msg);
-
-    return 0;
+    (void)ts;
+    send_auth_payload_pkt();
 }
 
-int ble_scan(EcoFlowDevice *devs, int max_devs, int timeout_sec)
+static void schedule_auth_payload(void)
 {
-    sd_bus *bus = NULL;
-    int r = sd_bus_open_system(&bus);
-    if (r < 0) {
-        LOG_ERR("Failed to open system bus: %s", strerror(-r));
-        return 0;
-    }
+    btstack_run_loop_set_timer(&auth_payload_timer, 1000);
+    btstack_run_loop_set_timer_handler(&auth_payload_timer,
+                                       auth_payload_timer_handler);
+    btstack_run_loop_add_timer(&auth_payload_timer);
+}
 
+static btstack_timer_source_t reconnect_timer;
 
-    const char *adapter = "/org/bluez/hci0";
+static void reconnect_timer_handler(btstack_timer_source_t *ts)
+{
+    (void)ts;
+    start_scan();
+}
 
+static void schedule_reconnect(void)
+{
+    LOG_INFO("Will reconnect in 2s...");
+    btstack_run_loop_set_timer(&reconnect_timer, 2000);
+    btstack_run_loop_set_timer_handler(&reconnect_timer,
+                                       reconnect_timer_handler);
+    btstack_run_loop_add_timer(&reconnect_timer);
+}
 
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    r = sd_bus_call_method(bus, BLUEZ_SERVICE, adapter,
-                           ADAPTER_IFACE, "StartDiscovery",
-                           &error, NULL, "");
-    sd_bus_error_free(&error);
-    if (r < 0) {
-        LOG_ERR("StartDiscovery failed: %s", strerror(-r));
-        sd_bus_unref(bus);
-        return 0;
-    }
+static btstack_packet_callback_registration_t hci_event_cb_reg;
 
-    LOG_INFO("Scanning for %d seconds...", timeout_sec);
+static void ble_packet_handler(uint8_t packet_type, uint16_t channel,
+                               uint8_t *packet, uint16_t size)
+{
+    (void)channel;
+    (void)size;
 
+    if (packet_type == HCI_EVENT_PACKET) {
+        uint8_t event = hci_event_packet_get_type(packet);
 
-    struct timespec end;
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    end.tv_sec += timeout_sec;
+        switch (event) {
 
-    while (1) {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (now.tv_sec > end.tv_sec ||
-            (now.tv_sec == end.tv_sec && now.tv_nsec >= end.tv_nsec))
+        case BTSTACK_EVENT_STATE:
+            if (btstack_event_state_get_state(packet) == HCI_STATE_WORKING)
+                start_scan();
             break;
 
-        r = sd_bus_process(bus, NULL);
-        if (r < 0) break;
-        if (r == 0)
-            sd_bus_wait(bus, 500000);
-    }
+        case GAP_EVENT_ADVERTISING_REPORT: {
+            bd_addr_t addr;
+            gap_event_advertising_report_get_address(packet, addr);
+            if (memcmp(addr, g.target_addr, 6) != 0) break;
 
-
-    error = SD_BUS_ERROR_NULL;
-    sd_bus_call_method(bus, BLUEZ_SERVICE, adapter,
-                       ADAPTER_IFACE, "StopDiscovery",
-                       &error, NULL, "");
-    sd_bus_error_free(&error);
-
-
-    sd_bus_message *reply = NULL;
-    error = SD_BUS_ERROR_NULL;
-    r = sd_bus_call_method(bus, BLUEZ_SERVICE, "/",
-                           DBUS_OM_IFACE, "GetManagedObjects",
-                           &error, &reply, "");
-    sd_bus_error_free(&error);
-    if (r < 0) {
-        sd_bus_unref(bus);
-        return 0;
-    }
-
-    int found = 0;
-
-    r = sd_bus_message_enter_container(reply, 'a', "{oa{sa{sv}}}");
-    if (r < 0) goto scan_done;
-
-    while (sd_bus_message_enter_container(reply, 'e', "oa{sa{sv}}") > 0) {
-        const char *path = NULL;
-        sd_bus_message_read(reply, "o", &path);
-
-        char name[64] = "";
-        char address[18] = "";
-        int16_t rssi = 0;
-        uint8_t mfr_data[64];
-        size_t mfr_len = 0;
-        bool has_ecoflow_mfr = false;
-
-        sd_bus_message_enter_container(reply, 'a', "{sa{sv}}");
-        while (sd_bus_message_enter_container(reply, 'e', "sa{sv}") > 0) {
-            const char *iface = NULL;
-            sd_bus_message_read(reply, "s", &iface);
-
-            if (iface && strcmp(iface, DEVICE_IFACE) == 0) {
-                sd_bus_message_enter_container(reply, 'a', "{sv}");
-                while (sd_bus_message_enter_container(reply, 'e', "sv") > 0) {
-                    const char *prop = NULL;
-                    sd_bus_message_read(reply, "s", &prop);
-
-                    if (prop && strcmp(prop, "Name") == 0) {
-                        const char *val = NULL;
-                        sd_bus_message_read(reply, "v", "s", &val);
-                        if (val) snprintf(name, sizeof(name), "%s", val);
-                    } else if (prop && strcmp(prop, "Address") == 0) {
-                        const char *val = NULL;
-                        sd_bus_message_read(reply, "v", "s", &val);
-                        if (val) snprintf(address, sizeof(address), "%s", val);
-                    } else if (prop && strcmp(prop, "RSSI") == 0) {
-                        sd_bus_message_read(reply, "v", "n", &rssi);
-                    } else if (prop && strcmp(prop, "ManufacturerData") == 0) {
-
-                        sd_bus_message_enter_container(reply, 'v', "a{qv}");
-                        sd_bus_message_enter_container(reply, 'a', "{qv}");
-                        while (sd_bus_message_enter_container(reply, 'e', "qv") > 0) {
-                            uint16_t mfr_id = 0;
-                            sd_bus_message_read(reply, "q", &mfr_id);
-                            if (mfr_id == ECOFLOW_MFR_ID) {
-                                sd_bus_message_enter_container(reply, 'v', "ay");
-                                const void *arr = NULL;
-                                size_t arr_len = 0;
-                                sd_bus_message_read_array(reply, 'y', &arr, &arr_len);
-                                if (arr && arr_len > 0) {
-                                    mfr_len = arr_len < sizeof(mfr_data) ? arr_len : sizeof(mfr_data);
-                                    memcpy(mfr_data, arr, mfr_len);
-                                    has_ecoflow_mfr = true;
-                                }
-                                sd_bus_message_exit_container(reply);
-                            } else {
-                                sd_bus_message_skip(reply, "v");
-                            }
-                            sd_bus_message_exit_container(reply);
-                        }
-                        sd_bus_message_exit_container(reply);
-                        sd_bus_message_exit_container(reply);
-                    } else {
-                        sd_bus_message_skip(reply, "v");
-                    }
-                    sd_bus_message_exit_container(reply);
-                }
-                sd_bus_message_exit_container(reply);
-            } else {
-                sd_bus_message_skip(reply, "a{sv}");
-            }
-            sd_bus_message_exit_container(reply);
+            LOG_INFO("Found device, connecting...");
+            gap_stop_scan();
+            g.state = BLE_CONNECTING;
+            gap_connect(addr, (bd_addr_type_t)
+                        gap_event_advertising_report_get_address_type(packet));
+            break;
         }
-        sd_bus_message_exit_container(reply);
-        sd_bus_message_exit_container(reply);
 
-        if (!has_ecoflow_mfr || found >= max_devs)
-            continue;
-
-
-        char serial[32] = "Unknown";
-        if (mfr_len >= 17)
-            snprintf(serial, sizeof(serial), "%.*s", 16, (char *)mfr_data + 1);
-
-
-        bool is_river3 = false;
-        for (int i = 0; RIVER3_PREFIXES[i]; i++) {
-            if (strncmp(serial, RIVER3_PREFIXES[i], strlen(RIVER3_PREFIXES[i])) == 0) {
-                is_river3 = true;
-                break;
-            }
-        }
-        if (!is_river3) {
-            const char *name_patterns[] = {"EF-R3", "R3PM", "R3P", NULL};
-            for (int i = 0; name_patterns[i]; i++) {
-                if (strstr(name, name_patterns[i])) {
-                    is_river3 = true;
+        case HCI_EVENT_LE_META:
+            switch (hci_event_le_meta_get_subevent_code(packet)) {
+            case HCI_SUBEVENT_LE_CONNECTION_COMPLETE: {
+                if (hci_subevent_le_connection_complete_get_status(packet) != 0) {
+                    LOG_ERR("Connection failed (0x%02x)",
+                            hci_subevent_le_connection_complete_get_status(packet));
+                    schedule_reconnect();
                     break;
                 }
-            }
-        }
-        if (!is_river3)
-            continue;
+                g.conn_handle =
+                    hci_subevent_le_connection_complete_get_connection_handle(packet);
+                LOG_INFO("Connected (handle 0x%04x)", g.conn_handle);
 
-        snprintf(devs[found].name, sizeof(devs[found].name), "%s",
-                 name[0] ? name : "EcoFlow");
-        snprintf(devs[found].address, sizeof(devs[found].address), "%s", address);
-        snprintf(devs[found].serial, sizeof(devs[found].serial), "%s", serial);
-        devs[found].rssi = rssi;
-        if (path)
-            snprintf(devs[found].obj_path, sizeof(devs[found].obj_path), "%s", path);
-        found++;
-    }
-
-scan_done:
-    sd_bus_message_unref(reply);
-    sd_bus_unref(bus);
-    return found;
-}
-
-static bool wait_services_resolved(sd_bus *bus, const char *dev_path,
-                                   int timeout_sec)
-{
-    struct timespec end;
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    end.tv_sec += timeout_sec;
-
-    while (1) {
-        sd_bus_error error = SD_BUS_ERROR_NULL;
-        int val = 0;
-        int r = sd_bus_get_property_trivial(bus, BLUEZ_SERVICE, dev_path,
-                                            DEVICE_IFACE, "ServicesResolved",
-                                            &error, 'b', &val);
-        sd_bus_error_free(&error);
-        if (r >= 0 && val)
-            return true;
-
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (now.tv_sec > end.tv_sec ||
-            (now.tv_sec == end.tv_sec && now.tv_nsec >= end.tv_nsec))
-            return false;
-
-        r = sd_bus_process(bus, NULL);
-        if (r < 0) return false;
-        if (r == 0)
-            sd_bus_wait(bus, 500000);
-    }
-}
-
-BLEConn *ble_connect(const char *device_address,
-                     const char *device_sn,
-                     const char *user_id,
-                     ble_status_cb cb, void *cb_user)
-{
-    BLEConn *conn = calloc(1, sizeof(*conn));
-    if (!conn) return NULL;
-
-    snprintf(conn->device_sn, sizeof(conn->device_sn), "%s", device_sn);
-    snprintf(conn->user_id, sizeof(conn->user_id), "%s", user_id);
-    conn->status_cb = cb;
-    conn->status_cb_user = cb_user;
-    snprintf(conn->adapter_path, sizeof(conn->adapter_path),
-             "/org/bluez/hci0");
-
-    int r = sd_bus_open_system(&conn->bus);
-    if (r < 0) {
-        LOG_ERR("Failed to open system bus: %s", strerror(-r));
-        free(conn);
-        return NULL;
-    }
-
-
-    char dev_comp[64];
-    addr_to_path(device_address, dev_comp);
-    snprintf(conn->device_path, sizeof(conn->device_path),
-             "%s/%s", conn->adapter_path, dev_comp);
-
-    LOG_INFO("Connecting to %s (%s)...", device_address, conn->device_path);
-
-
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->adapter_path,
-                       ADAPTER_IFACE, "StartDiscovery",
-                       &error, NULL, "");
-    sd_bus_error_free(&error);
-
-
-    {
-        struct timespec disc_end;
-        clock_gettime(CLOCK_MONOTONIC, &disc_end);
-        disc_end.tv_sec += 10;
-
-        while (1) {
-
-            sd_bus_error e2 = SD_BUS_ERROR_NULL;
-            sd_bus_message *prop_msg = NULL;
-            r = sd_bus_get_property(conn->bus, BLUEZ_SERVICE,
-                                    conn->device_path, DEVICE_IFACE,
-                                    "Address", &e2, &prop_msg, "s");
-            sd_bus_error_free(&e2);
-            sd_bus_message_unref(prop_msg);
-            if (r >= 0)
+                /* Discover all characteristics over the full handle range
+                 * instead of per-service, to avoid missing descriptors when
+                 * the wrong service end_handle clips the CCCD search. */
+                g.state = BLE_DISC_CHARS;
+                g.service.start_group_handle = 0x0001;
+                g.service.end_group_handle   = 0xFFFF;
+                gatt_client_discover_characteristics_for_service(
+                    ble_packet_handler, g.conn_handle, &g.service);
                 break;
+            }
+            default:
+                break;
+            }
+            break;
 
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            if (now.tv_sec > disc_end.tv_sec ||
-                (now.tv_sec == disc_end.tv_sec &&
-                 now.tv_nsec >= disc_end.tv_nsec)) {
-                LOG_ERR("Device not found within discovery timeout");
-                error = SD_BUS_ERROR_NULL;
-                sd_bus_call_method(conn->bus, BLUEZ_SERVICE,
-                                   conn->adapter_path, ADAPTER_IFACE,
-                                   "StopDiscovery", &error, NULL, "");
-                sd_bus_error_free(&error);
-                ble_disconnect(conn);
-                return NULL;
+        case HCI_EVENT_DISCONNECTION_COMPLETE:
+            LOG_INFO("Disconnected");
+            reset_state();
+            schedule_reconnect();
+            break;
+
+        case GATT_EVENT_SERVICE_QUERY_RESULT:
+            /* Not used — we discover chars over full handle range */
+            break;
+
+        case GATT_EVENT_CHARACTERISTIC_QUERY_RESULT: {
+            gatt_client_characteristic_t ch;
+            gatt_event_characteristic_query_result_get_characteristic(packet, &ch);
+            LOG_INFO("  char uuid16=0x%04x handle=%u-%u props=0x%02x",
+                     ch.uuid16, ch.value_handle, ch.end_handle, ch.properties);
+            if (ch.uuid16 == 0x0003) {
+                g.notify_char = ch;
+                g.found_notify = true;
+            }
+            if (ch.uuid16 == 0x0002) {
+                g.write_char = ch;
+                g.found_write = true;
+            }
+            break;
+        }
+
+        case GATT_EVENT_QUERY_COMPLETE: {
+            uint8_t status = gatt_event_query_complete_get_att_status(packet);
+            if (status != ATT_ERROR_SUCCESS) {
+                LOG_ERR("GATT query failed (0x%02x)", status);
+                break;
             }
 
-            r = sd_bus_process(conn->bus, NULL);
-            if (r < 0) break;
-            if (r == 0) sd_bus_wait(conn->bus, 500000);
-        }
-    }
-
-
-    error = SD_BUS_ERROR_NULL;
-    sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->adapter_path,
-                       ADAPTER_IFACE, "StopDiscovery",
-                       &error, NULL, "");
-    sd_bus_error_free(&error);
-
-
-    bool connected = false;
-    for (int attempt = 0; attempt < 3 && !connected; attempt++) {
-        if (attempt > 0) {
-            LOG_INFO("Retrying connection (attempt %d)...", attempt + 1);
-            struct timespec wait = {2, 0};
-            nanosleep(&wait, NULL);
-        }
-        error = SD_BUS_ERROR_NULL;
-        r = sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->device_path,
-                               DEVICE_IFACE, "Connect",
-                               &error, NULL, "");
-        if (r >= 0) {
-            connected = true;
-        } else {
-            if (attempt == 2)
-                LOG_ERR("Connect failed: %s",
-                        error.message ? error.message : strerror(-r));
-        }
-        sd_bus_error_free(&error);
-    }
-    if (!connected) {
-        ble_disconnect(conn);
-        return NULL;
-    }
-
-    LOG_INFO("Connected, waiting for services...");
-
-    if (!wait_services_resolved(conn->bus, conn->device_path, 15)) {
-        LOG_ERR("Timed out waiting for ServicesResolved");
-        ble_disconnect(conn);
-        return NULL;
-    }
-
-    LOG_INFO("Services resolved, finding characteristics...");
-
-
-    if (!find_char_path(conn->bus, conn->device_path, NOTIFY_UUID,
-                        conn->notify_path, sizeof(conn->notify_path))) {
-        LOG_ERR("Notify characteristic not found");
-        ble_disconnect(conn);
-        return NULL;
-    }
-    if (!find_char_path(conn->bus, conn->device_path, WRITE_UUID,
-                        conn->write_path, sizeof(conn->write_path))) {
-        LOG_ERR("Write characteristic not found");
-        ble_disconnect(conn);
-        return NULL;
-    }
-
-    LOG_INFO("Characteristics found, authenticating...");
-
-
-    char match[512];
-    snprintf(match, sizeof(match),
-             "type='signal',sender='" BLUEZ_SERVICE "',"
-             "interface='" DBUS_PROP_IFACE "',"
-             "member='PropertiesChanged',"
-             "path='%s'", conn->notify_path);
-
-    r = sd_bus_add_match(conn->bus, &conn->prop_slot, match,
-                         on_properties_changed, conn);
-    if (r < 0) {
-        LOG_ERR("Failed to add signal match: %s", strerror(-r));
-        ble_disconnect(conn);
-        return NULL;
-    }
-
-    if (!authenticate(conn)) {
-        LOG_ERR("Authentication failed");
-        ble_disconnect(conn);
-        return NULL;
-    }
-
-    LOG_INFO("Authentication successful!");
-    return conn;
-}
-
-int ble_run(BLEConn *conn, int timeout_sec)
-{
-    if (!conn) return -1;
-    conn->running = true;
-
-
-    gatt_notify(conn->bus, conn->notify_path, true);
-
-    uint64_t deadline = 0;
-    if (timeout_sec > 0) {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        deadline = (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000
-                   + (uint64_t)timeout_sec * 1000;
-    }
-
-    while (conn->running) {
-        int r = sd_bus_process(conn->bus, NULL);
-        if (r < 0) return r;
-        if (r > 0) continue;
-
-        if (timeout_sec > 0) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            uint64_t now_ms = (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
-            if (now_ms >= deadline)
+            switch (g.state) {
+            case BLE_DISC_CHARS:
+                if (!g.found_notify || !g.found_write) {
+                    LOG_ERR("Required characteristics not found");
+                    gap_disconnect(g.conn_handle);
+                    break;
+                }
+                LOG_INFO("Characteristics found, starting auth...");
+                /* No CCCD on this device — it auto-notifies.
+                 * Just register the listener and proceed. */
+                gatt_client_listen_for_characteristic_value_updates(
+                    &g.notify_listener, ble_packet_handler,
+                    g.conn_handle, &g.notify_char);
+                send_auth_pubkey();
                 break;
+
+            case BLE_AUTH_CHECK:
+                schedule_auth_payload();
+                break;
+
+            default:
+                break;
+            }
+            break;
         }
 
-        sd_bus_wait(conn->bus, 1000000);
-    }
+        case GATT_EVENT_NOTIFICATION: {
+            uint16_t vlen = gatt_event_notification_get_value_length(packet);
+            const uint8_t *val = gatt_event_notification_get_value(packet);
 
-    gatt_notify(conn->bus, conn->notify_path, false);
-    return 0;
-}
-
-void ble_stop(BLEConn *conn)
-{
-    if (conn) conn->running = false;
-}
-
-const River3Status *ble_latest_status(const BLEConn *conn)
-{
-    return (conn && conn->has_status) ? &conn->latest_status : NULL;
-}
-
-bool ble_is_authenticated(const BLEConn *conn)
-{
-    return conn && conn->authenticated;
-}
-
-void ble_disconnect(BLEConn *conn)
-{
-    if (!conn) return;
-
-    if (conn->prop_slot) {
-        sd_bus_slot_unref(conn->prop_slot);
-        conn->prop_slot = NULL;
-    }
-
-    if (conn->bus && conn->notify_path[0])
-        gatt_notify(conn->bus, conn->notify_path, false);
-
-    if (conn->bus && conn->device_path[0]) {
-        sd_bus_error error = SD_BUS_ERROR_NULL;
-        sd_bus_call_method(conn->bus, BLUEZ_SERVICE, conn->device_path,
-                           DEVICE_IFACE, "Disconnect",
-                           &error, NULL, "");
-        sd_bus_error_free(&error);
-
-        struct timespec disc_end;
-        clock_gettime(CLOCK_MONOTONIC, &disc_end);
-        disc_end.tv_sec += 2;
-        while (1) {
-            sd_bus_error e2 = SD_BUS_ERROR_NULL;
-            int connected = 0;
-            int r = sd_bus_get_property_trivial(conn->bus, BLUEZ_SERVICE,
-                                                conn->device_path, DEVICE_IFACE,
-                                                "Connected", &e2, 'b', &connected);
-            sd_bus_error_free(&e2);
-            if (r < 0 || !connected) break;
-
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            if (now.tv_sec > disc_end.tv_sec) break;
-
-            r = sd_bus_process(conn->bus, NULL);
-            if (r < 0) break;
-            if (r == 0) sd_bus_wait(conn->bus, 100000);
+            size_t space = sizeof(g.recv_buf) - g.recv_len;
+            size_t copy = vlen < space ? vlen : space;
+            if (copy > 0) {
+                memcpy(g.recv_buf + g.recv_len, val, copy);
+                g.recv_len += copy;
+            }
+            process_buffer();
+            break;
         }
 
+        default:
+            break;
+        }
     }
+}
 
-    if (conn->our_key) {
-        EVP_PKEY_free(conn->our_key);
-        conn->our_key = NULL;
-    }
+void ble_init(const char *address, const char *serial,
+              const char *user_id, ble_status_cb cb, void *cb_user)
+{
+    memset(&g, 0, sizeof(g));
+    g.conn_handle = HCI_CON_HANDLE_INVALID;
 
-    if (conn->bus) {
-        sd_bus_unref(conn->bus);
-        conn->bus = NULL;
-    }
+    snprintf(g.address, sizeof(g.address), "%s", address);
+    snprintf(g.serial, sizeof(g.serial), "%s", serial);
+    snprintf(g.user_id, sizeof(g.user_id), "%s", user_id);
+    g.cb = cb;
+    g.cb_user = cb_user;
 
-    free(conn);
+    parse_addr(address, g.target_addr);
+
+    hci_event_cb_reg.callback = ble_packet_handler;
+    hci_add_event_handler(&hci_event_cb_reg);
 }

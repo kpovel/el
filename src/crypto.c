@@ -5,8 +5,8 @@
 #include <string.h>
 #include <stdio.h>
 
-#include <openssl/evp.h>
-#include <openssl/md5.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/md5.h>
 
 uint8_t crc8_ccitt(const uint8_t *data, size_t len)
 {
@@ -55,30 +55,38 @@ uint8_t *aes_encrypt(const uint8_t *data, size_t data_len,
                      const uint8_t key[16], const uint8_t iv[16],
                      size_t *out_len)
 {
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return NULL;
+    /* PKCS#7 padding */
+    uint8_t pad = (uint8_t)(16 - (data_len % 16));
+    size_t padded_len = data_len + pad;
 
-    size_t max_len = data_len + 16;
-    uint8_t *out = malloc(max_len);
-    if (!out) { EVP_CIPHER_CTX_free(ctx); return NULL; }
+    uint8_t *padded = malloc(padded_len);
+    if (!padded) return NULL;
+    memcpy(padded, data, data_len);
+    memset(padded + data_len, pad, pad);
 
-    int len = 0, total = 0;
+    uint8_t *out = malloc(padded_len);
+    if (!out) { free(padded); return NULL; }
 
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1)
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+
+    uint8_t iv_copy[16];
+    memcpy(iv_copy, iv, 16);
+
+    if (mbedtls_aes_setkey_enc(&ctx, key, 128) != 0)
         goto fail;
-    if (EVP_EncryptUpdate(ctx, out, &len, data, (int)data_len) != 1)
+    if (mbedtls_aes_crypt_cbc(&ctx, MBEDTLS_AES_ENCRYPT,
+                               padded_len, iv_copy, padded, out) != 0)
         goto fail;
-    total = len;
-    if (EVP_EncryptFinal_ex(ctx, out + total, &len) != 1)
-        goto fail;
-    total += len;
 
-    *out_len = (size_t)total;
-    EVP_CIPHER_CTX_free(ctx);
+    mbedtls_aes_free(&ctx);
+    free(padded);
+    *out_len = padded_len;
     return out;
 
 fail:
-    EVP_CIPHER_CTX_free(ctx);
+    mbedtls_aes_free(&ctx);
+    free(padded);
     free(out);
     return NULL;
 }
@@ -87,41 +95,53 @@ uint8_t *aes_decrypt(const uint8_t *data, size_t data_len,
                      const uint8_t key[16], const uint8_t iv[16],
                      size_t *out_len)
 {
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return NULL;
+    if (data_len == 0 || data_len % 16 != 0)
+        return NULL;
 
     uint8_t *out = malloc(data_len);
-    if (!out) { EVP_CIPHER_CTX_free(ctx); return NULL; }
+    if (!out) return NULL;
 
-    int len = 0, total = 0;
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
 
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1)
-        goto fail;
-    if (EVP_DecryptUpdate(ctx, out, &len, data, (int)data_len) != 1)
-        goto fail;
-    total = len;
-    if (EVP_DecryptFinal_ex(ctx, out + total, &len) != 1)
-        goto fail;
-    total += len;
+    uint8_t iv_copy[16];
+    memcpy(iv_copy, iv, 16);
 
-    *out_len = (size_t)total;
-    EVP_CIPHER_CTX_free(ctx);
+    if (mbedtls_aes_setkey_dec(&ctx, key, 128) != 0)
+        goto fail;
+    if (mbedtls_aes_crypt_cbc(&ctx, MBEDTLS_AES_DECRYPT,
+                               data_len, iv_copy, data, out) != 0)
+        goto fail;
+
+    mbedtls_aes_free(&ctx);
+
+    /* Strip PKCS#7 padding */
+    uint8_t pad = out[data_len - 1];
+    if (pad == 0 || pad > 16)
+        goto fail_out;
+    for (size_t i = 0; i < pad; i++) {
+        if (out[data_len - 1 - i] != pad)
+            goto fail_out;
+    }
+
+    *out_len = data_len - pad;
     return out;
 
 fail:
-    EVP_CIPHER_CTX_free(ctx);
+    mbedtls_aes_free(&ctx);
+fail_out:
     free(out);
     return NULL;
 }
 
 void md5_hash(const uint8_t *data, size_t len, uint8_t out[16])
 {
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_md5(), NULL);
-    EVP_DigestUpdate(ctx, data, len);
-    unsigned int md_len = 0;
-    EVP_DigestFinal_ex(ctx, out, &md_len);
-    EVP_MD_CTX_free(ctx);
+    mbedtls_md5_context ctx;
+    mbedtls_md5_init(&ctx);
+    mbedtls_md5_starts(&ctx);
+    mbedtls_md5_update(&ctx, data, len);
+    mbedtls_md5_finish(&ctx, out);
+    mbedtls_md5_free(&ctx);
 }
 
 void generate_auth_payload(const char *user_id, const char *device_sn,

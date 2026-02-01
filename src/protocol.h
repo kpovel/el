@@ -49,8 +49,7 @@ typedef struct {
 
 static inline bool river3_grid_available(const River3Status *s)
 {
-    return s->ac_plugged_in || s->ac_input_power > 5.0f ||
-           s->ac_input_voltage > 100.0f;
+    return s->ac_input_power > 5.0f;
 }
 
 static inline bool river3_on_battery(const River3Status *s)

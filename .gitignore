@@ -1,6 +1,7 @@
 # Build artifacts
 *.o
 grid_monitor
+build/
 
 # Environment
 .env

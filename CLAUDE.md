@@ -1,40 +1,48 @@
 # EcoFlow River 3 Grid Monitor
 
-C project for monitoring grid/AC input status via Bluetooth.
+Bare-metal C project for **Raspberry Pi Pico 2 W** that monitors grid/AC input
+status via Bluetooth and drives the onboard LED: **LED ON = grid power
+available, LED OFF = grid lost.**
 
-Uses sd-bus (systemd) for BLE via BlueZ D-Bus API, and OpenSSL for crypto.
+Uses btstack (in Pico SDK) for BLE, mbedtls for AES/MD5, and micro-ecc for
+ECDH secp160r1.
 
 ## Build
 
+Requires: `cmake`, `arm-none-eabi-gcc`, `arm-none-eabi-newlib`.
+
 ```bash
-make          # produces ./grid_monitor
+make ADDRESS=AA:BB:CC:DD:EE:FF SERIAL=R631xxx USER_ID=12345
 make clean
 ```
 
-Dependencies (link flags: `-lsystemd -lssl -lcrypto`):
-- libsystemd (sd-bus)
-- OpenSSL 3.0+
+First build fetches the Pico SDK and micro-ecc via CMake FetchContent.
 
-## Usage
+## Flash
+
+Hold BOOTSEL on the Pico, plug USB, then:
 
 ```bash
-# Scan for EcoFlow devices
-./grid_monitor scan [--timeout N]
-
-# One-time grid check (returns exit code 0=up, 1=down, 2=error)
-./grid_monitor check ADDRESS --serial SN --user-id ID [--format text|json]
-
-# Continuous monitoring
-./grid_monitor monitor ADDRESS --serial SN --user-id ID [--interval N] [--format text|json]
+make flash
 ```
 
-Environment variables: `ECOFLOW_USER_ID`, `ECOFLOW_SERIAL`.
+Copies `build/grid_monitor.uf2` to the RP2350 mass-storage device.
+
+## Serial monitor (optional)
+
+```bash
+minicom -D /dev/ttyACM0 -b 115200
+```
 
 ## Files
 
-- `src/main.c` - CLI entry point (scan/check/monitor), signal handling
-- `src/ble.h/.c` - BLE scan, connect, auth, notifications via sd-bus/BlueZ D-Bus
-- `src/crypto.h/.c` - CRC8/CRC16, AES-128-CBC, MD5, ECDH secp160r1, session key
+- `src/main.c` - Entry point, CYW43 init, btstack run loop, LED via cyw43 GPIO
+- `src/ble.h/.c` - BLE connect, auth, notifications via btstack state machine
+- `src/crypto.h/.c` - CRC8/CRC16, AES-128-CBC (mbedtls), MD5 (mbedtls), ECDH secp160r1 (micro-ecc), session key
 - `src/protocol.h/.c` - Packet/EncPacket build/parse, protobuf decoder, status parser
 - `src/keydata.h/.c` - 64KB lookup table for session key generation
-- `Makefile` - Build system
+- `CMakeLists.txt` - CMake build (Pico SDK, btstack, mbedtls, micro-ecc)
+- `Makefile` - Wrapper that invokes CMake with device config
+- `flash.sh` - UF2 flash script for BOOTSEL mode
+- `btstack_config.h` - btstack LE Central configuration
+- `pico_sdk_import.cmake` - Standard Pico SDK import helper
