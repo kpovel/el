@@ -1,48 +1,32 @@
 # EcoFlow River 3 Grid Monitor
 
-Bare-metal C project for **Raspberry Pi Pico 2 W** that monitors grid/AC input
-status via Bluetooth and drives the onboard LED: **LED ON = grid power
-available, LED OFF = grid lost.**
+Bun/TypeScript project for **Raspberry Pi 5** (or any Linux with BlueZ) that
+checks grid/AC input status via Bluetooth. Outputs `UP` or `DOWN` and exits.
 
-Uses btstack (in Pico SDK) for BLE, mbedtls for AES/MD5, and micro-ecc for
-ECDH secp160r1.
+Uses dbus-next to talk to BlueZ over D-Bus, Node crypto for AES/MD5, and
+@noble/curves for ECDH secp160r1.
 
-## Build
+## Run
 
-Requires: `cmake`, `arm-none-eabi-gcc`, `arm-none-eabi-newlib`.
-
-```bash
-make ADDRESS=AA:BB:CC:DD:EE:FF SERIAL=R631xxx USER_ID=12345
-make clean
-```
-
-First build fetches the Pico SDK and micro-ecc via CMake FetchContent.
-
-## Flash
-
-Hold BOOTSEL on the Pico, plug USB, then:
+Requires: `bun`, BlueZ (`bluetoothd`).
 
 ```bash
-make flash
+bun install
+bun run index.ts --address AA:BB:CC:DD:EE:FF --serial R631xxx --user-id 12345
 ```
 
-Copies `build/grid_monitor.uf2` to the RP2350 mass-storage device.
-
-## Serial monitor (optional)
+Or via environment variables:
 
 ```bash
-minicom -D /dev/ttyACM0 -b 115200
+ECOFLOW_ADDRESS=AA:BB:CC:DD:EE:FF ECOFLOW_SERIAL=R631xxx ECOFLOW_USER_ID=12345 bun run index.ts
 ```
+
+Exit codes: 0 = success, 1 = bad args, 2 = connection/runtime error.
 
 ## Files
 
-- `src/main.c` - Entry point, CYW43 init, btstack run loop, LED via cyw43 GPIO
-- `src/ble.h/.c` - BLE connect, auth, notifications via btstack state machine
-- `src/crypto.h/.c` - CRC8/CRC16, AES-128-CBC (mbedtls), MD5 (mbedtls), ECDH secp160r1 (micro-ecc), session key
-- `src/protocol.h/.c` - Packet/EncPacket build/parse, protobuf decoder, status parser
-- `src/keydata.h/.c` - 64KB lookup table for session key generation
-- `CMakeLists.txt` - CMake build (Pico SDK, btstack, mbedtls, micro-ecc)
-- `Makefile` - Wrapper that invokes CMake with device config
-- `flash.sh` - UF2 flash script for BOOTSEL mode
-- `btstack_config.h` - btstack LE Central configuration
-- `pico_sdk_import.cmake` - Standard Pico SDK import helper
+- `index.ts` - Entry point, parses args, prints UP/DOWN, exits
+- `src/ble.ts` - BLE via D-Bus/BlueZ: connect, auth handshake, status notifications
+- `src/crypto.ts` - CRC8/CRC16, AES-128-CBC, MD5, ECDH secp160r1 (via openssl CLI), session key
+- `src/protocol.ts` - Packet/EncPacket build/parse, protobuf decoder, River3 status parser
+- `src/keydata.bin` - 64KB lookup table for session key generation

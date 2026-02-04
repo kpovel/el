@@ -1,19 +1,10 @@
-# Build artifacts
-*.o
-grid_monitor
+node_modules/
 build/
+*.log
 
-# Environment
 .env
 .env.local
 
-# OS
 .DS_Store
-
-# Logs
-*.log
-
-# EcoFlow specific
-login_key.bin
 
 todo.md

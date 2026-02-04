@@ -1,0 +1,15 @@
+{
+  "name": "ecoflow-grid-monitor",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "dbus-next": "^0.10.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.8"
+  }
+}
