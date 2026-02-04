@@ -2,6 +2,7 @@ import dbus from "dbus-next";
 import {
   md5,
   aesDecrypt,
+  crc16Arc,
   ecdhGenerateKeypair,
   ecdhComputeShared,
   generateSessionKey,
@@ -184,8 +185,13 @@ function parseEncResponse(
 ): { payload: Uint8Array } | null {
   if (data.length < 8) return null;
   const plen = data[4] | (data[5] << 8);
+  if (plen < 2) return null;
   const dataEnd = 6 + plen;
   if (dataEnd > data.length) return null;
+
+  const storedCrc = data[dataEnd - 2] | (data[dataEnd - 1] << 8);
+  const calcCrc = crc16Arc(data.subarray(0, dataEnd - 2));
+  if (storedCrc !== calcCrc) return null;
 
   const payload = data.subarray(6, 6 + plen - 2);
   return { payload };
