@@ -10,3 +10,5 @@ build/
 todo.md
 
 pico/build/
+
+src/keydata.bin
