@@ -8,7 +8,8 @@ const { values } = parseArgs({
     serial: { type: "string", short: "s" },
     "user-id": { type: "string", short: "u" },
   },
-  strict: false,
+  strict: true,
+  allowPositionals: true,
 });
 
 const address = values.address || process.env.ECOFLOW_ADDRESS;

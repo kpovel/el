@@ -1,11 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash } from "crypto";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
 import { Field } from "@noble/curves/abstract/modular.js";
 import { ecdh, weierstrass } from "@noble/curves/abstract/weierstrass.js";
+import keydataPath from "./keydata.bin" with { type: "file" };
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const keydataPath = resolve(__dirname, "keydata.bin");
 let keydataCache: Uint8Array | null = null;
 
 const CURVE = {

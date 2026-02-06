@@ -1,0 +1,16 @@
+[Unit]
+Description=EcoFlow River 3 Grid Status Monitor
+After=bluetooth.target dbus.service network.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ecoflow-grid-monitor
+EnvironmentFile=-/home/pi/ecoflow-grid-monitor/.env
+ExecStart=/home/pi/ecoflow-grid-monitor/ecoflow-grid-monitor
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
