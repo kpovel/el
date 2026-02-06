@@ -56,6 +56,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t 
     if (!p) {
         req->result = parse_grid_status(req->response, req->response_len);
         req->complete = true;
+        tcp_close(pcb);
+        req->pcb = NULL;
         return ERR_OK;
     }
 
@@ -93,7 +95,6 @@ static err_t http_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err) {
         "Connection: close\r\n"
         "\r\n";
 
-    cyw43_arch_lwip_check();
     tcp_write(pcb, request, sizeof(request) - 1, TCP_WRITE_FLAG_COPY);
     tcp_output(pcb);
 
@@ -147,6 +148,7 @@ static int check_grid(void) {
         return -1;
     }
 
+    http_close(&req);
     return req.result;
 }
 
@@ -192,11 +194,11 @@ int main(void) {
         int status = check_grid();
 
         if (status == 1) {
-            if (!led_state) printf("Grid UP - LED on\n");
+            printf("Grid UP\n");
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
             led_state = true;
         } else if (status == 0) {
-            if (led_state) printf("Grid DOWN - LED off\n");
+            printf("Grid DOWN\n");
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
             led_state = false;
         } else {

@@ -6,7 +6,7 @@ MOUNT_POINT := $(MOUNT_BASE)/$(PICO_VOLUME)
 
 WIFI_SSID     ?=
 WIFI_PASSWORD ?=
-SERVER_IP     ?= 192.168.1.100
+SERVER_IP     ?= 192.168.1.91
 SERVER_PORT   ?= 6969
 JOBS          ?= $(shell nproc)
 

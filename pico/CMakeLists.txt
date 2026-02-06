@@ -15,7 +15,7 @@ pico_sdk_init()
 
 set(WIFI_SSID "" CACHE STRING "WiFi network name")
 set(WIFI_PASSWORD "" CACHE STRING "WiFi password")
-set(SERVER_IP "192.168.1.100" CACHE STRING "Grid status server IP address")
+set(SERVER_IP "192.168.1.91" CACHE STRING "Grid status server IP address")
 set(SERVER_PORT 6969 CACHE STRING "Grid status server port")
 
 if(WIFI_SSID STREQUAL "")
