@@ -90,7 +90,7 @@ static err_t http_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err) {
     req->connected = true;
 
     static const char request[] =
-        "GET / HTTP/1.0\r\n"
+        "GET /api/grid HTTP/1.0\r\n"
         "Host: " SERVER_IP "\r\n"
         "Connection: close\r\n"
         "\r\n";

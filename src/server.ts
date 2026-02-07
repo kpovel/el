@@ -65,17 +65,22 @@ setInterval(pollGrid, intervalSec * 1000);
 
 const server = Bun.serve({
   port,
-  fetch() {
-    if (cachedStatus === null) {
-      return new Response("UNKNOWN\n", {
-        status: 503,
+  routes: {
+    "/": new Response("grid monitor\n", {
+      headers: { "Content-Type": "text/plain" },
+    }),
+    "/api/grid": () => {
+      if (cachedStatus === null) {
+        return new Response("UNKNOWN\n", {
+          status: 503,
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+
+      return new Response(cachedStatus + "\n", {
         headers: { "Content-Type": "text/plain" },
       });
-    }
-
-    return new Response(cachedStatus + "\n", {
-      headers: { "Content-Type": "text/plain" },
-    });
+    },
   },
 });
 
