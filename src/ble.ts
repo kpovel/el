@@ -424,12 +424,12 @@ function processBuffer(
   return null;
 }
 
-export async function checkGrid(
+export async function monitorGrid(
   address: string,
   serial: string,
   userId: string,
-  timeoutMs = 15000,
-): Promise<River3Status> {
+  onStatus: (status: River3Status) => void,
+): Promise<void> {
   const bus = dbus.systemBus();
   const adapterPath = await getAdapterPath(bus);
   if (!adapterPath) throw new Error("No Bluetooth adapter found");
@@ -476,18 +476,17 @@ export async function checkGrid(
   const recvLen = { v: 0 };
 
   return new Promise(async (resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("Timed out waiting for status"));
-    }, timeoutMs);
-
     let notifyObj: dbus.ProxyObject;
     let notifyProps: dbus.ClientInterface;
+    let devProps: dbus.ClientInterface;
+    let cleaned = false;
 
     const cleanup = async () => {
-      clearTimeout(timeout);
+      if (cleaned) return;
+      cleaned = true;
       try {
         notifyProps?.removeAllListeners("PropertiesChanged");
+        devProps?.removeAllListeners("PropertiesChanged");
         await gattNotify(bus, notifyPath, false);
       } catch {}
       try {
@@ -496,7 +495,19 @@ export async function checkGrid(
       bus.disconnect();
     };
 
-    const onChanged = (
+    const onDisconnect = (
+      iface: string,
+      changed: Record<string, dbus.Variant>,
+    ) => {
+      if (iface !== DEVICE_IFACE) return;
+      const conn = changed.Connected;
+      if (conn && conn.value === false) {
+        log("Device disconnected");
+        cleanup().then(() => resolve());
+      }
+    };
+
+    const onNotify = (
       iface: string,
       changed: Record<string, dbus.Variant>,
     ) => {
@@ -514,18 +525,19 @@ export async function checkGrid(
       recvLen.v += copy;
 
       const status = processBuffer(recvBuf, recvLen, auth);
-      if (status) {
-        cleanup().then(() => resolve(status));
-      }
+      if (status) onStatus(status);
     };
 
     try {
+      devProps = devObj.getInterface(DBUS_PROP_IFACE);
+      devProps.on("PropertiesChanged", onDisconnect);
+
       notifyObj = await bus.getProxyObject(BLUEZ_SERVICE, notifyPath);
       notifyProps = notifyObj.getInterface(DBUS_PROP_IFACE);
-      notifyProps.on("PropertiesChanged", onChanged);
+      notifyProps.on("PropertiesChanged", onNotify);
       await gattNotify(bus, notifyPath, true);
     } catch (e: any) {
-      clearTimeout(timeout);
+      await cleanup();
       reject(new Error(`Failed to start notifications: ${e.message}`));
     }
   });

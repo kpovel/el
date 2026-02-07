@@ -1,6 +1,9 @@
 import { parseArgs } from "util";
-import { checkGrid } from "./ble.js";
+import { renderToString } from "react-dom/server";
+import { createElement } from "react";
+import { monitorGrid } from "./ble.js";
 import { gridAvailable } from "./protocol.js";
+import { HomePage } from "./pages/home.js";
 
 const { values } = parseArgs({
   options: {
@@ -8,7 +11,6 @@ const { values } = parseArgs({
     serial: { type: "string", short: "s" },
     "user-id": { type: "string", short: "u" },
     port: { type: "string", short: "p" },
-    interval: { type: "string", short: "i" },
   },
   strict: true,
   allowPositionals: true,
@@ -21,8 +23,7 @@ function requiredArg(value: string | undefined, name: string): string {
         "Usage: bun run src/server.ts --address AA:BB:CC:DD:EE:FF --serial R631xxx --user-id 12345\n" +
         "  or set ECOFLOW_ADDRESS, ECOFLOW_SERIAL, ECOFLOW_USER_ID env vars\n" +
         "Options:\n" +
-        "  --port, -p       HTTP port (default: 6969)\n" +
-        "  --interval, -i   BLE poll interval in seconds (default: 60)",
+        "  --port, -p       HTTP port (default: 6969)",
     );
   }
   return value;
@@ -32,43 +33,40 @@ const address = requiredArg(values.address || process.env.ECOFLOW_ADDRESS, "addr
 const serial = requiredArg(values.serial || process.env.ECOFLOW_SERIAL, "serial");
 const userId = requiredArg(values["user-id"] || process.env.ECOFLOW_USER_ID, "user-id");
 const port = parseInt(values.port || process.env.PORT || "6969", 10);
-const intervalSec = parseInt(values.interval || "60", 10);
 
 let cachedStatus: "UP" | "DOWN" | null = null;
-let checking = false;
 
-async function pollGrid() {
-  if (checking) return;
-  checking = true;
-
-  try {
-    const status = await checkGrid(address, serial, userId);
-    const isUp = gridAvailable(status);
-    const newStatus = isUp ? "UP" : "DOWN";
-
-    if (newStatus !== cachedStatus) {
-      console.log(
-        `[${new Date().toISOString()}] Grid status changed: ${cachedStatus ?? "unknown"} -> ${newStatus} (AC input: ${status.acInputPower.toFixed(1)}W)`,
-      );
+(async () => {
+  while (true) {
+    try {
+      console.log(`[${new Date().toISOString()}] Connecting to EcoFlow BLE...`);
+      await monitorGrid(address, serial, userId, (status) => {
+        const newStatus = gridAvailable(status) ? "UP" : "DOWN";
+        if (newStatus !== cachedStatus) {
+          console.log(
+            `[${new Date().toISOString()}] Grid status changed: ${cachedStatus ?? "unknown"} -> ${newStatus} (AC input: ${status.acInputPower.toFixed(1)}W)`,
+          );
+        }
+        cachedStatus = newStatus;
+      });
+      console.log(`[${new Date().toISOString()}] BLE connection lost, reconnecting...`);
+    } catch (e: any) {
+      console.error(`[${new Date().toISOString()}] BLE error: ${e.message}, reconnecting...`);
     }
-
-    cachedStatus = newStatus;
-  } catch (e: any) {
-    console.error(`[${new Date().toISOString()}] BLE check failed: ${e.message}`);
-  } finally {
-    checking = false;
   }
-}
+})();
 
-pollGrid();
-setInterval(pollGrid, intervalSec * 1000);
+function renderPage(component: () => React.JSX.Element): Response {
+  const html = "<!DOCTYPE html>" + renderToString(createElement(component));
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
 
 const server = Bun.serve({
   port,
   routes: {
-    "/": new Response("grid monitor\n", {
-      headers: { "Content-Type": "text/plain" },
-    }),
+    "/": () => renderPage(HomePage),
     "/api/grid": () => {
       if (cachedStatus === null) {
         return new Response("UNKNOWN\n", {
@@ -81,9 +79,24 @@ const server = Bun.serve({
         headers: { "Content-Type": "text/plain" },
       });
     },
+    "/api/grid-status": () => {
+      const color =
+        cachedStatus === "UP"
+          ? "#28c840"
+          : cachedStatus === "DOWN"
+          ? "#e83030"
+          : "#555";
+      const label = cachedStatus ?? "— — —";
+      const html =
+        `<div style="width:16px;height:16px;border-radius:50%;background:${color};box-shadow:0 0 12px ${color};flex-shrink:0"></div>` +
+        `<div class="font-stencil text-[120px] leading-none tracking-wider">${label}</div>`;
+      return new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    },
   },
 });
 
 console.log(
-  `Grid status server listening on http://localhost:${server.port} (BLE poll every ${intervalSec}s)`,
+  `Grid status server listening on http://localhost:${server.port} (persistent BLE connection)`,
 );

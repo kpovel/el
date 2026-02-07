@@ -1,5 +1,5 @@
 import { parseArgs } from "util";
-import { checkGrid } from "./src/ble.js";
+import { monitorGrid } from "./src/ble.js";
 import { gridAvailable } from "./src/protocol.js";
 
 const { values } = parseArgs({
@@ -25,9 +25,12 @@ if (!address || !serial || !userId) {
 }
 
 try {
-  const status = await checkGrid(address, serial, userId);
-  console.log(gridAvailable(status) ? "UP" : "DOWN");
-  process.exit(0);
+  await monitorGrid(address, serial, userId, (status) => {
+    console.log(gridAvailable(status) ? "UP" : "DOWN");
+    process.exit(0);
+  });
+  process.stderr.write("Error: connection lost before receiving status\n");
+  process.exit(2);
 } catch (e: any) {
   process.stderr.write(`Error: ${e.message}\n`);
   process.exit(2);
