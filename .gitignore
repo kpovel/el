@@ -12,3 +12,7 @@ todo.md
 pico/build/
 
 src/keydata.bin
+
+*.db
+*.db-shm
+*.db-wal

@@ -128,41 +128,47 @@ export function HomePage() {
               <div className="cell cell-accent h-full flex flex-col items-center justify-center text-center p-8">
                 <div className="tag mb-3">AC GRID INPUT</div>
                 <div
-                  className="flex items-center justify-center gap-6"
                   hx-get="/api/grid-status"
                   hx-trigger="load, every 15s"
                   hx-swap="innerHTML"
                 >
-                  <div className="w-4 h-4 rounded-full bg-[var(--dim)]" style={{ flexShrink: 0 }} />
-                  <div className="font-stencil text-[120px] leading-none tracking-wider text-[var(--dim)]">
-                    — — —
+                  <div className="flex items-center justify-center gap-6">
+                    <div className="w-4 h-4 rounded-full bg-[var(--dim)]" style={{ flexShrink: 0 }} />
+                    <div className="font-stencil text-[120px] leading-none tracking-wider text-[var(--dim)]">
+                      — — —
+                    </div>
                   </div>
-                </div>
-                <div className="w-full h-px bg-[#333] my-5" />
-                <div className="flex items-center gap-8 text-sm">
-                  <div className="text-center">
-                    <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">VOLTAGE</div>
-                    <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">POWER</div>
-                    <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">BATTERY</div>
-                    <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
+                  <div className="w-full h-px bg-[#333] my-5" />
+                  <div className="flex items-center gap-8 text-sm">
+                    <div className="text-center">
+                      <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">VOLTAGE</div>
+                      <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">POWER</div>
+                      <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">BATTERY</div>
+                      <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
             <div className="col-span-12 lg:col-span-7">
-              <div className="grid grid-cols-2 gap-4 h-full">
+              <div
+                className="grid grid-cols-2 gap-4 h-full"
+                hx-get="/api/stats"
+                hx-trigger="load, every 30s"
+                hx-swap="innerHTML"
+              >
                 {[
-                  { tag: "INCIDENTS / 24H", val: "3", color: "var(--red)" },
-                  { tag: "UPTIME RATIO", val: "98.8%", color: "var(--green)" },
-                  { tag: "TOTAL DOWNTIME", val: "1:45", color: "var(--amber)" },
-                  { tag: "PEAK OUTAGE", val: "0:45", color: "var(--fg)" },
+                  { tag: "INCIDENTS / 24H", val: "—", color: "var(--red)" },
+                  { tag: "UPTIME RATIO", val: "—", color: "var(--green)" },
+                  { tag: "TOTAL DOWNTIME", val: "—", color: "var(--amber)" },
+                  { tag: "PEAK OUTAGE", val: "—", color: "var(--fg)" },
                 ].map((s, i) => (
                   <div key={i} className="cell p-5 flex flex-col justify-between">
                     <div className="tag">{s.tag}</div>
@@ -190,27 +196,24 @@ export function HomePage() {
                   </span>
                 </div>
               </div>
-              <div className="flex gap-[2px] items-end" style={{ height: "56px" }}>
-                {Array.from({ length: 96 }).map((_, i) => {
-                  const isDown = [14, 15, 16, 17, 18, 42, 43, 44, 78, 79].includes(i);
-                  const isPending = i > 88;
-                  return (
-                    <div
-                      key={i}
-                      className="flex-1 min-w-[5px] transition-colors duration-200"
-                      style={{
-                        height: isDown ? "100%" : "50%",
-                        background: isPending
-                          ? "#1a1a1a"
-                          : isDown
-                          ? "var(--red)"
-                          : "var(--fg)",
-                        opacity: isPending ? 1 : isDown ? 0.9 : 0.12,
-                      }}
-                      title={`${Math.floor(i / 4).toString().padStart(2, "0")}:${((i % 4) * 15).toString().padStart(2, "0")}`}
-                    />
-                  );
-                })}
+              <div
+                className="flex gap-[2px] items-end"
+                style={{ height: "56px" }}
+                hx-get="/api/power-map"
+                hx-trigger="load, every 30s"
+                hx-swap="innerHTML"
+              >
+                {Array.from({ length: 96 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="flex-1 min-w-[5px]"
+                    style={{
+                      height: "50%",
+                      background: "#1a1a1a",
+                      opacity: 1,
+                    }}
+                  />
+                ))}
               </div>
               <div className="flex justify-between tag mt-3">
                 <span>00:00</span>
@@ -224,35 +227,16 @@ export function HomePage() {
 
           <div className="grid grid-cols-12 gap-4 mb-8">
             <div className="col-span-12 lg:col-span-8 wipe-4">
-              <div className="cell">
+              <div
+                className="cell"
+                hx-get="/api/incidents"
+                hx-trigger="load, every 30s"
+                hx-swap="innerHTML"
+              >
                 <div className="px-5 py-3 border-b border-[#222] flex items-center justify-between">
                   <div className="tag">INCIDENT LOG</div>
-                  <div className="tag text-[var(--red)]">3 EVENTS</div>
+                  <div className="tag text-[var(--dim)]">LOADING...</div>
                 </div>
-                {[
-                  { t1: "03:30", t2: "04:15", dur: "45m", sev: "SEV-1", sevColor: "var(--red)" },
-                  { t1: "10:30", t2: "11:15", dur: "45m", sev: "SEV-1", sevColor: "var(--red)" },
-                  { t1: "19:30", t2: "19:45", dur: "15m", sev: "SEV-2", sevColor: "var(--amber)" },
-                ].map((row, i) => (
-                  <div key={i} className="px-5 py-4 border-b border-[#191919] flex items-center gap-6">
-                    <div className="w-1 h-8 rounded-full" style={{ background: row.sevColor }} />
-                    <div className="font-stencil text-2xl w-20">{row.t1}</div>
-                    <span className="text-[var(--dim)] text-sm">→</span>
-                    <div className="font-stencil text-2xl w-20">{row.t2}</div>
-                    <div className="text-sm text-[var(--dim)] ml-2">{row.dur}</div>
-                    <div className="ml-auto">
-                      <span
-                        className="font-stencil text-[11px] tracking-[0.3em] px-3 py-1"
-                        style={{
-                          border: `1px solid ${row.sevColor}`,
-                          color: row.sevColor,
-                        }}
-                      >
-                        {row.sev}
-                      </span>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
 
@@ -293,27 +277,19 @@ export function HomePage() {
 
           <div className="wipe-6 mb-4">
             <div className="flex items-center justify-between">
-              <div className="flex gap-2">
-                {[
-                  { n: "月", d: "MON", out: 2 },
-                  { n: "火", d: "TUE", out: 1 },
-                  { n: "水", d: "WED", out: 4 },
-                  { n: "木", d: "THU", out: 0 },
-                  { n: "金", d: "FRI", out: 3 },
-                  { n: "土", d: "SAT", out: 1 },
-                  { n: "日", d: "SUN", out: 2 },
-                ].map((day, i) => (
+              <div
+                className="flex gap-2"
+                hx-get="/api/weekly"
+                hx-trigger="load, every 60s"
+                hx-swap="innerHTML"
+              >
+                {Array.from({ length: 7 }).map((_, i) => (
                   <div
                     key={i}
                     className="cell w-14 h-14 flex flex-col items-center justify-center"
-                    style={{
-                      borderColor: day.out > 2 ? "var(--red-dim)" : "#222",
-                    }}
                   >
-                    <div className="font-stencil text-lg" style={{ color: day.out > 0 ? "var(--red)" : "var(--green)" }}>
-                      {day.out}
-                    </div>
-                    <div className="text-[8px] text-[var(--dim)] tracking-widest">{day.d}</div>
+                    <div className="font-stencil text-lg text-[var(--dim)]">—</div>
+                    <div className="text-[8px] text-[var(--dim)] tracking-widest">---</div>
                   </div>
                 ))}
               </div>
