@@ -202,23 +202,20 @@ const server = Bun.serve({
         `<div class="tag text-[var(--red)]">${incidents.length} EVENT${incidents.length > 1 ? "S" : ""}</div>` +
         `</div>`;
 
-      for (const inc of incidents) {
+      for (const inc of [...incidents].sort((a, b) => a.start - b.start)) {
         const t1 = new Date(inc.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
         const t2 = new Date(inc.end).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
         const dur = formatDuration(inc.durationMin);
-        const sev = inc.durationMin >= 30 ? "SEV-1" : "SEV-2";
-        const sevColor = sev === "SEV-1" ? "var(--red)" : "var(--amber)";
+        const barColor = inc.durationMin >= 30 ? "var(--red)" : "var(--amber)";
 
         html +=
           `<div class="px-5 py-4 border-b border-[#191919] flex items-center gap-6">` +
-          `<div class="w-1 h-8 rounded-full" style="background:${sevColor}"></div>` +
+          `<div class="w-1 h-8 rounded-full" style="background:${barColor}"></div>` +
           `<div class="font-stencil text-2xl w-20">${t1}</div>` +
           `<span class="text-[var(--dim)] text-sm">\u2192</span>` +
           `<div class="font-stencil text-2xl w-20">${t2}</div>` +
           `<div class="text-sm text-[var(--dim)] ml-2">${dur}</div>` +
-          `<div class="ml-auto">` +
-          `<span class="font-stencil text-[11px] tracking-[0.3em] px-3 py-1" style="border:1px solid ${sevColor};color:${sevColor}">${sev}</span>` +
-          `</div></div>`;
+          `</div>`;
       }
 
       return new Response(html, {
