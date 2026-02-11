@@ -43,11 +43,18 @@ const serial = requiredArg(values.serial || process.env.ECOFLOW_SERIAL, "serial"
 const userId = requiredArg(values["user-id"] || process.env.ECOFLOW_USER_ID, "user-id");
 const port = parseInt(values.port || process.env.PORT || "6969", 10);
 
+const RECONNECT_BASE_MS = 5_000;
+const RECONNECT_MAX_MS = 60_000;
+
 (async () => {
+  let backoff = RECONNECT_BASE_MS;
+
   while (true) {
+    let hadStatus = false;
     try {
       console.log(`[${new Date().toISOString()}] Connecting to EcoFlow BLE...`);
       await monitorGrid(address, serial, userId, (status) => {
+        hadStatus = true;
         const isUp = gridAvailable(status);
         const newStatus = isUp ? "UP" : "DOWN";
         const prev = getLatestStatus();
@@ -68,6 +75,15 @@ const port = parseInt(values.port || process.env.PORT || "6969", 10);
     } catch (e: any) {
       console.error(`[${new Date().toISOString()}] BLE error: ${e.message}, reconnecting...`);
     }
+
+    if (hadStatus) {
+      backoff = RECONNECT_BASE_MS;
+    }
+
+    console.log(`[${new Date().toISOString()}] Waiting ${(backoff / 1000).toFixed(0)}s before reconnect...`);
+    await new Promise((r) => setTimeout(r, backoff));
+
+    backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
   }
 })();
 
