@@ -136,7 +136,7 @@ const server = Bun.serve({
       const label = status ?? "— — —";
 
       const voltage = log?.acInputVoltage != null ? `${log.acInputVoltage.toFixed(0)}V` : "—";
-      const power = log?.acInputPower != null ? `${log.acInputPower.toFixed(0)}W` : "—";
+      const power = log?.acOutputPower != null ? `${log.acOutputPower.toFixed(0)}W` : "—";
       const battery = log?.batteryLevel != null ? `${log.batteryLevel.toFixed(0)}%` : "—";
 
       const html =
