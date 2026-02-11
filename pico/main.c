@@ -20,14 +20,18 @@ typedef struct {
     int result;
 } http_request_t;
 
-static void http_close(http_request_t *req) {
+static void http_close(http_request_t *req, bool abort) {
     if (req->pcb) {
         cyw43_arch_lwip_begin();
         tcp_arg(req->pcb, NULL);
         tcp_recv(req->pcb, NULL);
         tcp_err(req->pcb, NULL);
         tcp_sent(req->pcb, NULL);
-        tcp_close(req->pcb);
+        if (abort) {
+            tcp_abort(req->pcb);
+        } else {
+            tcp_close(req->pcb);
+        }
         cyw43_arch_lwip_end();
         req->pcb = NULL;
     }
@@ -56,8 +60,6 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t 
     if (!p) {
         req->result = parse_grid_status(req->response, req->response_len);
         req->complete = true;
-        tcp_close(pcb);
-        req->pcb = NULL;
         return ERR_OK;
     }
 
@@ -134,7 +136,7 @@ static int check_grid(void) {
     cyw43_arch_lwip_end();
 
     if (err != ERR_OK) {
-        http_close(&req);
+        http_close(&req, true);
         return -1;
     }
 
@@ -144,11 +146,11 @@ static int check_grid(void) {
     }
 
     if (!req.complete) {
-        http_close(&req);
+        http_close(&req, true);
         return -1;
     }
 
-    http_close(&req);
+    http_close(&req, false);
     return req.result;
 }
 
@@ -191,6 +193,16 @@ int main(void) {
     bool led_state = false;
 
     while (true) {
+        int link = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+        if (link != CYW43_LINK_UP) {
+            printf("WiFi link down (status %d), reconnecting...\n", link);
+            cyw43_arch_wifi_connect_timeout_ms(
+                WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 30000
+            );
+            sleep_ms(1000);
+            continue;
+        }
+
         int status = check_grid();
 
         if (status == 1) {
