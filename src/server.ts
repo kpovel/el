@@ -202,7 +202,7 @@ const server = Bun.serve({
         `<div class="tag text-[var(--red)]">${incidents.length} EVENT${incidents.length > 1 ? "S" : ""}</div>` +
         `</div>`;
 
-      for (const inc of [...incidents].sort((a, b) => a.start - b.start)) {
+      for (const inc of [...incidents].sort((a, b) => b.start - a.start)) {
         const t1 = new Date(inc.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
         const t2 = new Date(inc.end).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
         const dur = formatDuration(inc.durationMin);
