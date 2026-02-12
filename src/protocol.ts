@@ -276,7 +276,7 @@ export function parseRiver3Status(data: Uint8Array): River3Status | null {
 }
 
 export function gridAvailable(s: River3Status): boolean {
-  return s.acInputPower > 5.0;
+  return s.acInputPower > 1;
 }
 
 export {
