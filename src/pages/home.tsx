@@ -145,7 +145,11 @@ export function HomePage() {
                       <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
                     </div>
                     <div className="text-center">
-                      <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">POWER</div>
+                      <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">INPUT</div>
+                      <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">OUTPUT</div>
                       <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
                     </div>
                     <div className="text-center">

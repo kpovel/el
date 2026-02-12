@@ -136,7 +136,8 @@ const server = Bun.serve({
       const label = status ?? "— — —";
 
       const voltage = log?.acInputVoltage != null ? `${log.acInputVoltage.toFixed(0)}V` : "—";
-      const power = log?.acOutputPower != null ? `${log.acOutputPower.toFixed(0)}W` : "—";
+      const inputPower = log?.acInputPower != null ? `${log.acInputPower.toFixed(0)}W` : "—";
+      const outputPower = log?.acOutputPower != null ? `${log.acOutputPower.toFixed(0)}W` : "—";
       const battery = log?.batteryLevel != null ? `${log.batteryLevel.toFixed(0)}%` : "—";
 
       const html =
@@ -147,7 +148,8 @@ const server = Bun.serve({
         `<div class="w-full h-px bg-[#333] my-5"></div>` +
         `<div class="flex items-center gap-8 text-sm">` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">VOLTAGE</div><div class="font-stencil text-2xl text-[var(--fg)]">${voltage}</div></div>` +
-        `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">POWER</div><div class="font-stencil text-2xl text-[var(--fg)]">${power}</div></div>` +
+        `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">INPUT</div><div class="font-stencil text-2xl text-[var(--fg)]">${inputPower}</div></div>` +
+        `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">OUTPUT</div><div class="font-stencil text-2xl text-[var(--fg)]">${outputPower}</div></div>` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">BATTERY</div><div class="font-stencil text-2xl text-[var(--fg)]">${battery}</div></div>` +
         `</div>`;
       return new Response(html, {
