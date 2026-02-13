@@ -5,10 +5,12 @@ import { desc, sql, and, gte, lte, isNull, isNotNull } from "drizzle-orm";
 import { gridLogs } from "./schema.js";
 import type { River3Status } from "../protocol.js";
 import migration0000 from "../../drizzle/0000_acoustic_kang.sql" with { type: "text" };
+import migration0001 from "../../drizzle/0001_loose_anthem.sql" with { type: "text" };
 import journal from "../../drizzle/meta/_journal.json" with { type: "json" };
 
 const migrationSqlFiles: Record<string, string> = {
   "0000_acoustic_kang": migration0000,
+  "0001_loose_anthem": migration0001,
 };
 
 const migrations = journal.entries.map((entry) => {

@@ -8,6 +8,7 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/ecoflow-grid-monitor
 EnvironmentFile=-/home/pi/ecoflow-grid-monitor/.env
+Environment=TZ=Europe/Kyiv
 ExecStart=/home/pi/ecoflow-grid-monitor/ecoflow-grid-monitor
 Restart=on-failure
 RestartSec=10

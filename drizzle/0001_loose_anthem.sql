@@ -1,0 +1,1 @@
+CREATE INDEX `idx_grid_logs_timestamp` ON `grid_logs` (`timestamp`);
