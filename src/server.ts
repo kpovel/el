@@ -183,6 +183,9 @@ const server = Bun.serve({
 
     "/api/power-map": () => {
       const slots = getPowerMap24h();
+      const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const dayStart = Date.now() - 24 * 60 * 60 * 1000;
+      const slotMs = 15 * 60 * 1000;
       let barsHtml = "";
       for (let i = 0; i < 96; i++) {
         const s = slots[i];
@@ -191,9 +194,8 @@ const server = Bun.serve({
         const height = isDown ? "100%" : "50%";
         const bg = isPending ? "#1a1a1a" : isDown ? "var(--red)" : "var(--fg)";
         const opacity = isPending ? 1 : isDown ? 0.9 : 0.12;
-        const hour = Math.floor(i / 4).toString().padStart(2, "0");
-        const min = ((i % 4) * 15).toString().padStart(2, "0");
-        barsHtml += `<div class="flex-1 min-w-[5px] transition-colors duration-200" style="height:${height};background:${bg};opacity:${opacity}" title="${hour}:${min}"></div>`;
+        const slotTime = new Date(dayStart + i * slotMs).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: localTz });
+        barsHtml += `<div class="flex-1 min-w-[5px] transition-colors duration-200" style="height:${height};background:${bg};opacity:${opacity}" title="${slotTime}"></div>`;
       }
       return new Response(barsHtml, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -221,8 +223,9 @@ const server = Bun.serve({
         `</div>`;
 
       for (const inc of [...incidents].sort((a, b) => b.start - a.start)) {
-        const t1 = new Date(inc.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-        const t2 = new Date(inc.end).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+        const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const t1 = new Date(inc.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: localTz });
+        const t2 = new Date(inc.end).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: localTz });
         const dur = formatDuration(inc.durationMin);
         const barColor = inc.durationMin >= 30 ? "var(--red)" : "var(--amber)";
 

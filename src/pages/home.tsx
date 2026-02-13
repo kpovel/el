@@ -93,6 +93,11 @@ const styles = `
 `;
 
 export function HomePage() {
+  const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const fmt = (d: Date) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: localTz });
+  const now = Date.now();
+  const pmLabels = [0, 6, 12, 18].map((h) => fmt(new Date(now - (24 - h) * 60 * 60 * 1000)));
+
   return (
     <Layout
       title="BLACKOUT — Grid Failure Monitor"
@@ -220,10 +225,10 @@ export function HomePage() {
                 ))}
               </div>
               <div className="flex justify-between tag mt-3">
-                <span>00:00</span>
-                <span>06:00</span>
-                <span>12:00</span>
-                <span>18:00</span>
+                <span>{pmLabels[0]}</span>
+                <span>{pmLabels[1]}</span>
+                <span>{pmLabels[2]}</span>
+                <span>{pmLabels[3]}</span>
                 <span>NOW</span>
               </div>
             </div>
