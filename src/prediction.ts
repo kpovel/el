@@ -184,16 +184,27 @@ export function computeHourlyRisk(
   return result;
 }
 
-function findNextHighRiskWindow(
-  hourlyRisk: Array<{ hour: Date; probability: number }>,
-  threshold: number = 0.05,
-): { hour: Date; probability: number } | null {
-  for (const entry of hourlyRisk) {
-    if (entry.probability >= threshold) {
-      return entry;
-    }
+export function computeDailyOutageProbability(
+  incidents: Incident[],
+  now: number,
+): number {
+  if (incidents.length === 0) return 0;
+
+  const oldest = Math.min(...incidents.map((i) => i.start));
+  const totalDays = Math.max(1, Math.ceil((now - oldest) / (24 * 60 * 60 * 1000)));
+
+  const daysWithOutage = new Set<string>();
+  for (const inc of incidents) {
+    const d = new Date(inc.start);
+    daysWithOutage.add(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
   }
 
+  return Math.min(1, daysWithOutage.size / totalDays);
+}
+
+function findPeakRiskWindow(
+  hourlyRisk: Array<{ hour: Date; probability: number }>,
+): { hour: Date; probability: number } | null {
   if (hourlyRisk.length === 0) return null;
 
   let best = hourlyRisk[0];
@@ -250,20 +261,22 @@ export function predict(
   const hourlyRisk = computeHourlyRisk(slotProbs, dayWeights, now);
   const { expectedMin, range } = predictDuration(incidents, alpha);
 
+  const dailyProbability = computeDailyOutageProbability(incidents, now);
+
   let nextOutage: OutagePrediction["nextOutage"] = null;
   if (currentStatus !== "DOWN") {
-    const nextWindow = findNextHighRiskWindow(hourlyRisk);
-    if (nextWindow) {
+    const peakWindow = findPeakRiskWindow(hourlyRisk);
+    if (peakWindow) {
       const hourSpecific = predictDurationByTimeOfDay(
         incidents,
-        nextWindow.hour.getHours(),
+        peakWindow.hour.getHours(),
         alpha,
       );
       const duration = hourSpecific ?? { expectedMin: expectedMin, range };
 
       nextOutage = {
-        expectedStart: nextWindow.hour,
-        probability: nextWindow.probability,
+        expectedStart: peakWindow.hour,
+        probability: dailyProbability,
         expectedDurationMin: duration.expectedMin,
         durationRange: duration.range,
       };

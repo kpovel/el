@@ -6,6 +6,7 @@ import {
   predictDuration,
   predictDurationByTimeOfDay,
   computeHourlyRisk,
+  computeDailyOutageProbability,
   predict,
 } from "./prediction.js";
 import type { Incident } from "./db/index.js";
@@ -310,6 +311,49 @@ describe("computeHourlyRisk", () => {
   });
 });
 
+describe("computeDailyOutageProbability", () => {
+  test("no incidents returns 0", () => {
+    expect(computeDailyOutageProbability([], FIXED_NOW)).toBe(0);
+  });
+
+  test("outage every day for 10 days returns 1.0", () => {
+    const incidents = Array.from({ length: 10 }, (_, i) =>
+      makeIncident(daysAgo(i + 1, 14), 30),
+    );
+    const prob = computeDailyOutageProbability(incidents, FIXED_NOW);
+    expect(prob).toBeCloseTo(1, 0);
+  });
+
+  test("outage on 3 out of 10 days returns ~0.3", () => {
+    const incidents = [
+      makeIncident(daysAgo(1, 14), 30),
+      makeIncident(daysAgo(5, 14), 30),
+      makeIncident(daysAgo(10, 14), 30),
+    ];
+    const prob = computeDailyOutageProbability(incidents, FIXED_NOW);
+    expect(prob).toBeGreaterThanOrEqual(0.25);
+    expect(prob).toBeLessThanOrEqual(0.35);
+  });
+
+  test("multiple outages on the same day count as one day", () => {
+    const incidents = [
+      makeIncident(daysAgo(1, 10), 15),
+      makeIncident(daysAgo(1, 14), 15),
+      makeIncident(daysAgo(1, 18), 15),
+    ];
+    const prob = computeDailyOutageProbability(incidents, FIXED_NOW);
+    expect(prob).toBeCloseTo(1, 0);
+  });
+
+  test("probability is capped at 1", () => {
+    const incidents = Array.from({ length: 30 }, (_, i) =>
+      makeIncident(daysAgo(i + 1, 14), 30),
+    );
+    const prob = computeDailyOutageProbability(incidents, FIXED_NOW);
+    expect(prob).toBeLessThanOrEqual(1);
+  });
+});
+
 describe("predict (integration)", () => {
   test("no data returns null predictions with low confidence", () => {
     const result = predict([], "UP", FIXED_NOW);
@@ -352,8 +396,17 @@ describe("predict (integration)", () => {
     const result = predict(incidents, "UP", FIXED_NOW);
     expect(result.nextOutage).not.toBeNull();
     expect(result.nextOutage!.expectedDurationMin).toBeGreaterThan(0);
-    expect(result.nextOutage!.probability).toBeGreaterThan(0);
+    expect(result.nextOutage!.probability).toBeGreaterThan(0.5);
     expect(result.currentOutageEnd).toBeNull();
+  });
+
+  test("daily outage pattern yields high probability on nextOutage", () => {
+    const incidents = Array.from({ length: 14 }, (_, i) =>
+      makeIncident(daysAgo(i + 1, 14), 30),
+    );
+    const result = predict(incidents, "UP", FIXED_NOW);
+    expect(result.nextOutage).not.toBeNull();
+    expect(result.nextOutage!.probability).toBeGreaterThanOrEqual(0.9);
   });
 
   test("when DOWN, currentOutageEnd is populated", () => {
