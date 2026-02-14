@@ -80,8 +80,11 @@ export interface Incident {
   durationMin: number;
 }
 
-export function getIncidents24h(): Incident[] {
-  const logs = getLogs24h();
+const MIN_OUTAGE_MINUTES = 5;
+
+function extractIncidents(
+  logs: { timestamp: number; status: string }[],
+): Incident[] {
   const incidents: Incident[] = [];
   let downStart: number | null = null;
 
@@ -89,24 +92,26 @@ export function getIncidents24h(): Incident[] {
     if (log.status === "DOWN" && downStart === null) {
       downStart = log.timestamp;
     } else if (log.status === "UP" && downStart !== null) {
-      incidents.push({
-        start: downStart,
-        end: log.timestamp,
-        durationMin: Math.round((log.timestamp - downStart) / 60000),
-      });
+      const durationMin = Math.round((log.timestamp - downStart) / 60000);
+      if (durationMin >= MIN_OUTAGE_MINUTES) {
+        incidents.push({ start: downStart, end: log.timestamp, durationMin });
+      }
       downStart = null;
     }
   }
 
   if (downStart !== null) {
-    incidents.push({
-      start: downStart,
-      end: Date.now(),
-      durationMin: Math.round((Date.now() - downStart) / 60000),
-    });
+    const durationMin = Math.round((Date.now() - downStart) / 60000);
+    if (durationMin >= MIN_OUTAGE_MINUTES) {
+      incidents.push({ start: downStart, end: Date.now(), durationMin });
+    }
   }
 
   return incidents;
+}
+
+export function getIncidents24h(): Incident[] {
+  return extractIncidents(getLogs24h());
 }
 
 export function getStats24h() {
@@ -162,32 +167,7 @@ export function getLogs30d() {
 }
 
 export function getIncidents30d(): Incident[] {
-  const logs = getLogs30d();
-  const incidents: Incident[] = [];
-  let downStart: number | null = null;
-
-  for (const log of logs) {
-    if (log.status === "DOWN" && downStart === null) {
-      downStart = log.timestamp;
-    } else if (log.status === "UP" && downStart !== null) {
-      incidents.push({
-        start: downStart,
-        end: log.timestamp,
-        durationMin: Math.round((log.timestamp - downStart) / 60000),
-      });
-      downStart = null;
-    }
-  }
-
-  if (downStart !== null) {
-    incidents.push({
-      start: downStart,
-      end: Date.now(),
-      durationMin: Math.round((Date.now() - downStart) / 60000),
-    });
-  }
-
-  return incidents;
+  return extractIncidents(getLogs30d());
 }
 
 export function getWeeklyPattern(): { day: string; kanji: string; outages: number }[] {
@@ -218,16 +198,7 @@ export function getWeeklyPattern(): { day: string; kanji: string; outages: numbe
       .orderBy(gridLogs.timestamp)
       .all();
 
-    let outages = 0;
-    let wasDown = false;
-    for (const log of dayLogs) {
-      if (log.status === "DOWN" && !wasDown) {
-        outages++;
-        wasDown = true;
-      } else if (log.status === "UP") {
-        wasDown = false;
-      }
-    }
+    const outages = extractIncidents(dayLogs).length;
 
     const dayInfo = days[d.getDay()];
     result.push({ day: dayInfo.day, kanji: dayInfo.kanji, outages });
