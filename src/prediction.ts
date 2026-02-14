@@ -31,8 +31,6 @@ export interface OutagePrediction {
 }
 
 const SLOTS_PER_DAY = 96;
-const SLOT_MS = 15 * 60 * 1000;
-const HOURS_PER_DAY = 24;
 
 export function exponentialSmoothing(
   values: number[],
@@ -106,7 +104,6 @@ export function buildDayOfWeekWeights(incidents: Incident[]): number[] {
 
   const weights = new Array(7).fill(0);
   const totalIncidents = incidents.length;
-  const avgPerDay = totalIncidents / 7;
 
   for (let i = 0; i < 7; i++) {
     if (dayCoverage[i] === 0) {
@@ -162,11 +159,12 @@ export function computeHourlyRisk(
   hours: number = 24,
 ): Array<{ hour: Date; probability: number }> {
   const result: Array<{ hour: Date; probability: number }> = [];
-  const currentHour = new Date(now);
-  currentHour.setMinutes(0, 0, 0);
+  const nextHour = new Date(now);
+  nextHour.setMinutes(0, 0, 0);
+  nextHour.setHours(nextHour.getHours() + 1);
 
   for (let h = 0; h < hours; h++) {
-    const hourDate = new Date(currentHour.getTime() + h * 60 * 60 * 1000);
+    const hourDate = new Date(nextHour.getTime() + h * 60 * 60 * 1000);
     const dayWeight = dayWeights[hourDate.getDay()];
     const hourOfDay = hourDate.getHours();
 
