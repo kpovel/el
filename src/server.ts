@@ -11,8 +11,10 @@ import {
   getStats24h,
   getPowerMap24h,
   getIncidents24h,
+  getIncidents30d,
   getWeeklyPattern,
 } from "./db/index.js";
+import { predict } from "./prediction.js";
 
 const { values } = parseArgs({
   options: {
@@ -256,6 +258,102 @@ const server = Bun.serve({
           `<div class="text-[8px] text-[var(--dim)] tracking-widest">${day.day}</div>` +
           `</div>`;
       }
+      return new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    },
+
+    "/api/prediction": () => {
+      const incidents = getIncidents30d();
+      const status = getLatestStatus();
+      const prediction = predict(incidents, status);
+      return jsonResponse(prediction);
+    },
+
+    "/api/prediction-widget": () => {
+      const incidents = getIncidents30d();
+      const status = getLatestStatus();
+      const p = predict(incidents, status);
+      const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+      let nextOutageHtml: string;
+      if (p.nextOutage) {
+        const startTime = p.nextOutage.expectedStart.toLocaleTimeString("en-GB", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: localTz,
+        });
+        const prob = (p.nextOutage.probability * 100).toFixed(0);
+        const dur = formatDuration(p.nextOutage.expectedDurationMin);
+        const durRange = `${formatDuration(p.nextOutage.durationRange.min)}\u2013${formatDuration(p.nextOutage.durationRange.max)}`;
+        nextOutageHtml =
+          `<div class="flex items-baseline gap-3">` +
+          `<div class="font-stencil text-4xl" style="color:var(--amber)">${startTime}</div>` +
+          `<div class="text-sm text-[var(--dim)]">${prob}% chance</div>` +
+          `</div>` +
+          `<div class="mt-2 text-sm text-[var(--dim)]">Expected duration: <span class="text-[var(--fg)]">${dur}</span> (${durRange})</div>`;
+      } else {
+        nextOutageHtml =
+          `<div class="text-[var(--dim)] text-sm">Not enough data to predict</div>`;
+      }
+
+      let currentEndHtml = "";
+      if (p.currentOutageEnd) {
+        const endTime = p.currentOutageEnd.expectedEnd.toLocaleTimeString("en-GB", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: localTz,
+        });
+        const range = `${formatDuration(p.currentOutageEnd.durationRange.min)}\u2013${formatDuration(p.currentOutageEnd.durationRange.max)}`;
+        currentEndHtml =
+          `<div class="cell p-5 mt-4" style="border-color:var(--red-dim)">` +
+          `<div class="tag" style="color:var(--red)">ESTIMATED RETURN</div>` +
+          `<div class="font-stencil text-4xl mt-2" style="color:var(--green)">${endTime}</div>` +
+          `<div class="mt-1 text-sm text-[var(--dim)]">Remaining: ${range}</div>` +
+          `</div>`;
+      }
+
+      let riskBarHtml = "";
+      const maxProb = Math.max(...p.hourlyRisk.map((r) => r.probability), 0.01);
+      for (const r of p.hourlyRisk) {
+        const h = r.hour.toLocaleTimeString("en-GB", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: localTz,
+        });
+        const heightPct = Math.max(4, (r.probability / maxProb) * 100);
+        const color = r.probability > 0.15
+          ? "var(--red)"
+          : r.probability > 0.05
+            ? "var(--amber)"
+            : "var(--fg)";
+        const opacity = r.probability > 0 ? Math.max(0.15, r.probability / maxProb) : 0.06;
+        riskBarHtml +=
+          `<div class="flex-1 min-w-[8px]" style="height:${heightPct}%;background:${color};opacity:${opacity}" title="${h}: ${(r.probability * 100).toFixed(1)}%"></div>`;
+      }
+
+      const confidenceColor = p.meta.confidence === "high"
+        ? "var(--green)"
+        : p.meta.confidence === "medium"
+          ? "var(--amber)"
+          : "var(--red)";
+
+      const html =
+        `<div class="cell p-5">` +
+        `<div class="flex items-center justify-between mb-4">` +
+        `<div class="tag">NEXT PREDICTED OUTAGE</div>` +
+        `<div class="text-[10px] tracking-[0.15em]" style="color:${confidenceColor}">${p.meta.confidence.toUpperCase()} CONFIDENCE (${p.meta.dataPoints} incidents / ${p.meta.dataSpanDays}d)</div>` +
+        `</div>` +
+        nextOutageHtml +
+        `</div>` +
+        currentEndHtml +
+        `<div class="cell p-5 mt-4">` +
+        `<div class="tag mb-3">24H OUTAGE RISK</div>` +
+        `<div class="flex items-end gap-[2px]" style="height:60px">` +
+        riskBarHtml +
+        `</div>` +
+        `</div>`;
+
       return new Response(html, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });

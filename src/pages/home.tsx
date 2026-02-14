@@ -284,6 +284,19 @@ export function HomePage() {
             </div>
           </div>
 
+          <div className="wipe-6 mb-8">
+            <div
+              hx-get="/api/prediction-widget"
+              hx-trigger="load, every 60s"
+              hx-swap="innerHTML"
+            >
+              <div className="cell p-5">
+                <div className="tag mb-3">NEXT PREDICTED OUTAGE</div>
+                <div className="text-[var(--dim)] text-sm">Loading prediction data...</div>
+              </div>
+            </div>
+          </div>
+
           <div className="wipe-6 mb-4">
             <div className="flex items-center justify-between">
               <div

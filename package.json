@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "bun run src/server.ts"
+    "start": "bun run src/server.ts",
+    "test": "bun test src/"
   },
   "dependencies": {
     "@noble/curves": "^2.0.1",
