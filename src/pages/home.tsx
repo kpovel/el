@@ -134,7 +134,7 @@ export function HomePage() {
                 <div className="tag mb-3">AC GRID INPUT</div>
                 <div
                   hx-get="/api/grid-status"
-                  hx-trigger="load, every 15s"
+                  hx-trigger="load, every 1s"
                   hx-swap="innerHTML"
                 >
                   <div className="flex items-center justify-center gap-6">
