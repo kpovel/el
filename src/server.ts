@@ -166,10 +166,10 @@ const server = Bun.serve({
       const html =
         `<div class="flex items-center justify-center gap-6">` +
         `<div style="width:16px;height:16px;border-radius:50%;background:${color};box-shadow:0 0 12px ${color};flex-shrink:0"></div>` +
-        `<div class="font-stencil text-[120px] leading-none tracking-wider">${label}</div>` +
+        `<div class="font-stencil leading-none tracking-wider" style="font-size:clamp(3.5rem,15vw,7.5rem)">${label}</div>` +
         `</div>` +
         `<div class="w-full h-px bg-[#333] my-5"></div>` +
-        `<div class="flex items-center gap-8 text-sm">` +
+        `<div class="flex flex-wrap items-center justify-center gap-4 sm:gap-8 text-sm">` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">VOLTAGE</div><div class="font-stencil text-2xl text-[var(--fg)]">${voltage}</div></div>` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">INPUT</div><div class="font-stencil text-2xl text-[var(--fg)]">${inputPower}</div></div>` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">OUTPUT</div><div class="font-stencil text-2xl text-[var(--fg)]">${outputPower}</div></div>` +

@@ -139,12 +139,12 @@ export function HomePage() {
                 >
                   <div className="flex items-center justify-center gap-6">
                     <div className="w-4 h-4 rounded-full bg-[var(--dim)]" style={{ flexShrink: 0 }} />
-                    <div className="font-stencil text-[120px] leading-none tracking-wider text-[var(--dim)]">
+                    <div className="font-stencil text-[clamp(3.5rem,15vw,7.5rem)] leading-none tracking-wider text-[var(--dim)]">
                       — — —
                     </div>
                   </div>
                   <div className="w-full h-px bg-[#333] my-5" />
-                  <div className="flex items-center gap-8 text-sm">
+                  <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-8 text-sm">
                     <div className="text-center">
                       <div className="text-[var(--dim)] text-[11px] tracking-[0.2em]">VOLTAGE</div>
                       <div className="font-stencil text-2xl text-[var(--fg)]">—</div>
