@@ -104,7 +104,7 @@ export function HomePage() {
       styles={styles}
       bodyClass="min-h-screen"
     >
-      <div className="min-h-screen flex flex-col">
+      <div className="min-h-screen flex flex-col overflow-x-hidden">
         <header className="px-6 md:px-10 pt-8 pb-6 wipe-1">
           <div className="flex items-start justify-between">
             <div>
