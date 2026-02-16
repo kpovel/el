@@ -62,7 +62,7 @@ const RECONNECT_MAX_MS = 60_000;
         const prev = getLatestStatus();
 
         console.log(
-          `[${new Date().toISOString()}] Grid: ${newStatus} | AC: ${status.acInputPower.toFixed(1)}W / ${status.acInputVoltage.toFixed(0)}V | Battery: ${status.batteryLevel.toFixed(0)}%`,
+          `[${new Date().toISOString()}] Grid: ${newStatus} | AC: ${status.acInputPower.toFixed(1)}W / ${status.acInputVoltage.toFixed(0)}V | Battery: ${status.batteryLevel.toFixed(0)}% / ${status.batteryTemp.toFixed(0)}°C`,
         );
 
         insertLog(newStatus, status);
@@ -141,6 +141,7 @@ const server = Bun.serve({
       const inputPower = log?.acInputPower != null ? `${log.acInputPower.toFixed(0)}W` : "—";
       const outputPower = log?.acOutputPower != null ? `${log.acOutputPower.toFixed(0)}W` : "—";
       const battery = log?.batteryLevel != null ? `${log.batteryLevel.toFixed(0)}%` : "—";
+      const batteryTemp = log?.batteryTemp != null ? `${log.batteryTemp.toFixed(0)}°` : "—";
 
       const html =
         `<div class="flex items-center justify-center gap-6">` +
@@ -153,6 +154,7 @@ const server = Bun.serve({
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">INPUT</div><div class="font-stencil text-2xl text-[var(--fg)]">${inputPower}</div></div>` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">OUTPUT</div><div class="font-stencil text-2xl text-[var(--fg)]">${outputPower}</div></div>` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">BATTERY</div><div class="font-stencil text-2xl text-[var(--fg)]">${battery}</div></div>` +
+        `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">BAT TEMP</div><div class="font-stencil text-2xl text-[var(--fg)]">${batteryTemp}</div></div>` +
         `</div>`;
       return new Response(html, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
