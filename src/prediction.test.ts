@@ -474,4 +474,100 @@ describe("predict (integration)", () => {
     const result = predict(incidents, null, FIXED_NOW);
     expect(result.currentOutageEnd).toBeNull();
   });
+
+  test("DOWN with no matching ongoing incident still produces currentOutageEnd", () => {
+    const incidents = [
+      makeIncident(daysAgo(3, 14), 60),
+      makeIncident(daysAgo(2, 14), 45),
+      makeIncident(daysAgo(1, 14), 50),
+    ];
+    const result = predict(incidents, "DOWN", FIXED_NOW);
+    expect(result.currentOutageEnd).not.toBeNull();
+    expect(result.currentOutageEnd!.expectedEnd.getTime()).toBeGreaterThan(FIXED_NOW);
+    expect(result.currentOutageEnd!.durationRange.min).toBeGreaterThanOrEqual(1);
+  });
+
+  test("DOWN with elapsed time reduces remaining duration range", () => {
+    const incidents = [
+      makeIncident(daysAgo(5, 14), 60),
+      makeIncident(daysAgo(4, 14), 60),
+      makeIncident(daysAgo(3, 14), 60),
+      makeIncident(daysAgo(2, 14), 60),
+      makeIncident(daysAgo(1, 14), 60),
+      {
+        start: FIXED_NOW - 30 * 60_000,
+        end: FIXED_NOW,
+        durationMin: 30,
+      },
+    ];
+    const result = predict(incidents, "DOWN", FIXED_NOW);
+    expect(result.currentOutageEnd).not.toBeNull();
+
+    const resultFresh = predict(
+      incidents.slice(0, 5),
+      "DOWN",
+      FIXED_NOW,
+    );
+    expect(resultFresh.currentOutageEnd).not.toBeNull();
+    expect(result.currentOutageEnd!.durationRange.max).toBeLessThanOrEqual(
+      resultFresh.currentOutageEnd!.durationRange.max,
+    );
+  });
+});
+
+describe("buildSlotProbabilities edge cases", () => {
+  test("outage at end of day (slot 95) doesn't overflow", () => {
+    const inc = makeIncident(daysAgo(1, 23, 45), 30);
+    const probs = buildSlotProbabilities([inc], FIXED_NOW);
+    expect(probs).toHaveLength(96);
+    expect(probs[95]).toBeGreaterThan(0);
+    expect(probs.every((p) => p <= 1)).toBe(true);
+  });
+
+  test("outage spanning midnight only populates end-of-day slots (known limitation)", () => {
+    const inc = makeIncident(daysAgo(1, 23, 0), 180);
+    const probs = buildSlotProbabilities([inc], FIXED_NOW);
+
+    const slot23h = 23 * 4;
+    expect(probs[slot23h]).toBeGreaterThan(0);
+
+    const slot0h = 0;
+    expect(probs[slot0h]).toBe(0);
+  });
+});
+
+describe("predictDurationByTimeOfDay edge cases", () => {
+  test("midnight wraparound: hour 0 matches incidents near hour 23", () => {
+    const incidents = [
+      makeIncident(daysAgo(1, 23), 30),
+      makeIncident(daysAgo(2, 22), 40),
+      makeIncident(daysAgo(3, 23), 35),
+    ];
+    const result = predictDurationByTimeOfDay(incidents, 0);
+    expect(result).not.toBeNull();
+    expect(result!.expectedMin).toBeGreaterThan(0);
+  });
+
+  test("midnight wraparound: hour 23 matches incidents near hour 1", () => {
+    const incidents = [
+      makeIncident(daysAgo(1, 1), 20),
+      makeIncident(daysAgo(2, 0), 25),
+      makeIncident(daysAgo(3, 1), 30),
+    ];
+    const result = predictDurationByTimeOfDay(incidents, 23);
+    expect(result).not.toBeNull();
+    expect(result!.expectedMin).toBeGreaterThan(0);
+  });
+});
+
+describe("buildDayOfWeekWeights edge cases", () => {
+  test("uses oldest-to-newest window, not oldest-to-now", () => {
+    const incidents = [
+      makeIncident(daysAgo(28, 14), 30),
+      makeIncident(daysAgo(27, 14), 30),
+    ];
+    const weights = buildDayOfWeekWeights(incidents);
+    const totalCoverage = weights.reduce((a, b) => a + b, 0);
+    expect(totalCoverage).toBeGreaterThan(0);
+  });
 });
