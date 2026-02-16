@@ -61,8 +61,15 @@ const RECONNECT_MAX_MS = 60_000;
         const newStatus = isUp ? "UP" : "DOWN";
         const prev = getLatestStatus();
 
+        const netDrain =
+          (status.acOutputPower + status.usbOutputPower) -
+          (status.acInputPower + status.dcInputPower);
+        const remainLog = netDrain > 0
+          ? `${((status.batteryLevel / 100 * 858) / netDrain).toFixed(1)}h`
+          : "—";
+
         console.log(
-          `[${new Date().toISOString()}] Grid: ${newStatus} | AC: ${status.acInputPower.toFixed(1)}W / ${status.acInputVoltage.toFixed(0)}V | Battery: ${status.batteryLevel.toFixed(0)}% / ${status.batteryTemp.toFixed(0)}°C`,
+          `[${new Date().toISOString()}] Grid: ${newStatus} | AC: ${status.acInputPower.toFixed(1)}W / ${status.acInputVoltage.toFixed(0)}V | Battery: ${status.batteryLevel.toFixed(0)}% / ${status.batteryTemp.toFixed(0)}°C | Remaining: ${remainLog}`,
         );
 
         insertLog(newStatus, status);
@@ -143,6 +150,19 @@ const server = Bun.serve({
       const battery = log?.batteryLevel != null ? `${log.batteryLevel.toFixed(0)}%` : "—";
       const batteryTemp = log?.batteryTemp != null ? `${log.batteryTemp.toFixed(0)}°` : "—";
 
+      let remaining = "—";
+      if (log) {
+        const netDrain =
+          (log.acOutputPower ?? 0) + (log.usbOutputPower ?? 0) -
+          (log.acInputPower ?? 0) - (log.dcInputPower ?? 0);
+        if (netDrain > 0 && log.batteryLevel != null) {
+          const hours = ((log.batteryLevel / 100) * 858) / netDrain;
+          const h = Math.floor(hours);
+          const m = Math.round((hours - h) * 60);
+          remaining = `${h}:${m.toString().padStart(2, "0")}`;
+        }
+      }
+
       const html =
         `<div class="flex items-center justify-center gap-6">` +
         `<div style="width:16px;height:16px;border-radius:50%;background:${color};box-shadow:0 0 12px ${color};flex-shrink:0"></div>` +
@@ -155,6 +175,7 @@ const server = Bun.serve({
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">OUTPUT</div><div class="font-stencil text-2xl text-[var(--fg)]">${outputPower}</div></div>` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">BATTERY</div><div class="font-stencil text-2xl text-[var(--fg)]">${battery}</div></div>` +
         `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">BAT TEMP</div><div class="font-stencil text-2xl text-[var(--fg)]">${batteryTemp}</div></div>` +
+        `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">REMAINING</div><div class="font-stencil text-2xl text-[var(--fg)]">${remaining}</div></div>` +
         `</div>`;
       return new Response(html, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
