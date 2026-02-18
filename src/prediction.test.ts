@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import {
   exponentialSmoothing,
   buildSlotProbabilities,
+  buildStartSlotProbabilities,
   buildDayOfWeekWeights,
   predictDuration,
   predictDurationByTimeOfDay,
@@ -123,6 +124,23 @@ describe("buildSlotProbabilities", () => {
     );
     const probs = buildSlotProbabilities(incidents, FIXED_NOW);
     expect(probs.every((p) => p <= 1)).toBe(true);
+  });
+});
+
+describe("buildStartSlotProbabilities", () => {
+  test("long outages do not inflate later slots", () => {
+    const incidents = [
+      makeIncident(daysAgo(1, 8, 0), 240),
+      makeIncident(daysAgo(2, 8, 0), 240),
+      makeIncident(daysAgo(3, 8, 0), 240),
+    ];
+
+    const probs = buildStartSlotProbabilities(incidents, FIXED_NOW);
+    const startSlot = 8 * 4;
+    const lateSlot = 11 * 4;
+
+    expect(probs[startSlot]).toBeGreaterThan(0);
+    expect(probs[lateSlot]).toBe(0);
   });
 });
 
@@ -453,6 +471,20 @@ describe("predict (integration)", () => {
     const result = predict(incidents, "UP", FIXED_NOW);
     expect(result.nextOutage).not.toBeNull();
     expect(result.nextOutage!.expectedDurationMin).toBeCloseTo(30, 0);
+  });
+
+  test("nextOutage uses outage start pattern, not outage occupancy peak", () => {
+    const incidents = [
+      makeIncident(daysAgo(1, 8, 0), 240),
+      makeIncident(daysAgo(2, 8, 0), 240),
+      makeIncident(daysAgo(3, 8, 0), 240),
+      makeIncident(daysAgo(4, 8, 0), 240),
+      makeIncident(daysAgo(5, 8, 0), 240),
+    ];
+
+    const result = predict(incidents, "UP", FIXED_NOW);
+    expect(result.nextOutage).not.toBeNull();
+    expect(result.nextOutage!.expectedStart.getHours()).toBe(8);
   });
 
   test("dataSpanDays reflects actual span of incident data", () => {

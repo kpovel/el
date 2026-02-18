@@ -82,6 +82,32 @@ export function buildSlotProbabilities(
   return probs;
 }
 
+export function buildStartSlotProbabilities(
+  incidents: Incident[],
+  now: number,
+): number[] {
+  const probs = new Array(SLOTS_PER_DAY).fill(0);
+  if (incidents.length === 0) return probs;
+
+  const oldest = Math.min(...incidents.map((i) => i.start));
+  const totalDays = Math.max(1, Math.ceil((now - oldest) / (24 * 60 * 60 * 1000)));
+
+  const slotHits = new Array(SLOTS_PER_DAY).fill(0);
+
+  for (const inc of incidents) {
+    const d = new Date(inc.start);
+    const minuteOfDay = d.getHours() * 60 + d.getMinutes();
+    const startSlot = Math.floor(minuteOfDay / 15);
+    slotHits[startSlot]++;
+  }
+
+  for (let i = 0; i < SLOTS_PER_DAY; i++) {
+    probs[i] = Math.min(1, slotHits[i] / totalDays);
+  }
+
+  return probs;
+}
+
 export function buildDayOfWeekWeights(incidents: Incident[]): number[] {
   const counts = new Array(7).fill(0);
   const dayCoverage = new Array(7).fill(0);
@@ -257,15 +283,17 @@ export function predict(
   }
 
   const slotProbs = buildSlotProbabilities(incidents, now);
+  const startSlotProbs = buildStartSlotProbabilities(incidents, now);
   const dayWeights = buildDayOfWeekWeights(incidents);
   const hourlyRisk = computeHourlyRisk(slotProbs, dayWeights, now);
+  const hourlyStartRisk = computeHourlyRisk(startSlotProbs, dayWeights, now);
   const { expectedMin, range } = predictDuration(incidents, alpha);
 
   const dailyProbability = computeDailyOutageProbability(incidents, now);
 
   let nextOutage: OutagePrediction["nextOutage"] = null;
   if (currentStatus !== "DOWN") {
-    const peakWindow = findPeakRiskWindow(hourlyRisk);
+    const peakWindow = findPeakRiskWindow(hourlyStartRisk);
     if (peakWindow) {
       const hourSpecific = predictDurationByTimeOfDay(
         incidents,
