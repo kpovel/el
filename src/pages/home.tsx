@@ -235,7 +235,7 @@ export function HomePage() {
           </div>
 
           <div className="grid grid-cols-12 gap-4 mb-8">
-            <div className="col-span-12 lg:col-span-8 wipe-4">
+            <div className="col-span-12 wipe-4">
               <div
                 className="cell"
                 hx-get="/api/incidents"
@@ -249,39 +249,6 @@ export function HomePage() {
               </div>
             </div>
 
-            <div className="col-span-12 lg:col-span-4 wipe-5">
-              <div className="cell p-6 h-full flex flex-col justify-between">
-                <div>
-                  <div className="tag mb-4">SIGNAL CHAIN</div>
-                  <div className="space-y-3">
-                    {[
-                      { label: "EcoFlow R3", proto: "BLE GATT" },
-                      { label: "RPi 5", proto: "D-Bus / BlueZ" },
-                      { label: "Bun Server", proto: "HTTP :6969" },
-                      { label: "Pico 2W", proto: "LED Mirror" },
-                    ].map((n, i) => (
-                      <div key={i}>
-                        <div className="flex items-center gap-3">
-                          <span className="font-stencil text-lg text-[var(--dim)] w-5">{i + 1}</span>
-                          <span className="font-heading text-sm font-semibold">{n.label}</span>
-                        </div>
-                        <div className="text-[10px] text-[var(--dim)] ml-8">{n.proto}</div>
-                        {i < 3 && (
-                          <div className="ml-[9px] mt-1 mb-1 w-px h-3 bg-[#333]" />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="mt-6 pt-4 border-t border-[#222]">
-                  <div className="flex flex-wrap gap-2">
-                    {["ECDH", "AES-128", "MD5", "CRC8", "PROTOBUF"].map((t) => (
-                      <span key={t} className="tag px-2 py-1 border border-[#333]">{t}</span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
 
           <div className="wipe-6 mb-8">
