@@ -35,16 +35,3 @@ ECOFLOW_USER_ID=12345 \
 bun run index.ts
 ```
 
-## Exit Codes
-
-- `0`: success
-- `1`: invalid arguments
-- `2`: connection/runtime error
-
-## Project Structure
-
-- `index.ts` - entry point, argument parsing, outputs `UP`/`DOWN`
-- `src/ble.ts` - BLE/BlueZ D-Bus connection, auth handshake, notifications
-- `src/crypto.ts` - CRC8/CRC16, AES-128-CBC, MD5, ECDH secp160r1, session key
-- `src/protocol.ts` - packet encode/decode, protobuf decode, River 3 status parsing
-- `src/keydata.bin` - 64 KB lookup table for session key generation
