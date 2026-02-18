@@ -351,9 +351,8 @@ const server = Bun.serve({
 
       const html =
         `<div class="cell cell-accent p-6">` +
-        `<div class="flex items-center justify-between mb-2">` +
+        `<div class="flex items-center mb-2">` +
         `<div class="text-[10px] tracking-[0.15em]" style="color:${confidenceColor}">${p.meta.confidence.toUpperCase()} CONFIDENCE</div>` +
-        `<div class="text-[10px] tracking-[0.1em] text-[var(--dim)]">${p.meta.dataPoints} INCIDENTS / ${p.meta.dataSpanDays}D</div>` +
         `</div>` +
         bodyHtml +
         `</div>`;
