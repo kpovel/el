@@ -339,7 +339,7 @@ const server = Bun.serve({
           `<div class="font-heading text-sm text-[var(--dim)] mt-1 tracking-wider">${isToday ? "TODAY" : isTomorrow ? "TOMORROW" : startDate.toUpperCase()}</div>` +
           `<div class="w-full h-px bg-[#333] my-4"></div>` +
           `<div class="flex items-center gap-8">` +
-          `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">PREDICTED HOUR CHANCE</div><div class="font-stencil text-2xl" style="color:${probColor}">${prob.toFixed(0)}%</div></div>` +
+          `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">OUTAGE CHANCE</div><div class="font-stencil text-2xl" style="color:${probColor}">${prob.toFixed(0)}%</div></div>` +
           `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">DURATION</div><div class="font-stencil text-2xl text-[var(--fg)]">${dur}</div></div>` +
           `<div class="text-center"><div class="text-[var(--dim)] text-[11px] tracking-[0.2em]">RANGE</div><div class="font-stencil text-2xl text-[var(--fg)]">${rangeMin}\u2013${rangeMax}</div></div>` +
           `</div>`;
