@@ -10,7 +10,7 @@ import {
   getLatestStatus,
   getStats24h,
   getPowerMap24h,
-  getIncidents24h,
+  getIncidentsToday,
   getIncidents30d,
   getWeeklyPattern,
 } from "./db/index.js";
@@ -228,14 +228,14 @@ const server = Bun.serve({
     },
 
     "/api/incidents": () => {
-      const incidents = getIncidents24h();
+      const incidents = getIncidentsToday();
       if (incidents.length === 0) {
         const html =
           `<div class="px-5 py-3 border-b border-[#222] flex items-center justify-between">` +
           `<div class="tag">INCIDENT LOG</div>` +
           `<div class="tag text-[var(--green)]">0 EVENTS</div>` +
           `</div>` +
-          `<div class="px-5 py-8 text-center text-[var(--dim)] text-sm">No incidents in the last 24 hours</div>`;
+          `<div class="px-5 py-8 text-center text-[var(--dim)] text-sm">No incidents today</div>`;
         return new Response(html, {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });

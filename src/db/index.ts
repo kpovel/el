@@ -74,6 +74,18 @@ export function getLogs24h() {
     .all();
 }
 
+export function getLogsToday() {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+
+  return db
+    .select()
+    .from(gridLogs)
+    .where(gte(gridLogs.timestamp, dayStart.getTime()))
+    .orderBy(gridLogs.timestamp)
+    .all();
+}
+
 export interface Incident {
   start: number;
   end: number;
@@ -112,6 +124,10 @@ function extractIncidents(
 
 export function getIncidents24h(): Incident[] {
   return extractIncidents(getLogs24h());
+}
+
+export function getIncidentsToday(): Incident[] {
+  return extractIncidents(getLogsToday());
 }
 
 export function getStats24h() {
