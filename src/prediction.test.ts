@@ -414,17 +414,17 @@ describe("predict (integration)", () => {
     const result = predict(incidents, "UP", FIXED_NOW);
     expect(result.nextOutage).not.toBeNull();
     expect(result.nextOutage!.expectedDurationMin).toBeGreaterThan(0);
-    expect(result.nextOutage!.probability).toBeGreaterThan(0.5);
+    expect(result.nextOutage!.probability).toBeGreaterThan(0);
     expect(result.currentOutageEnd).toBeNull();
   });
 
-  test("daily outage pattern yields high probability on nextOutage", () => {
+  test("daily outage pattern yields non-zero predicted-hour probability", () => {
     const incidents = Array.from({ length: 14 }, (_, i) =>
       makeIncident(daysAgo(i + 1, 14), 30),
     );
     const result = predict(incidents, "UP", FIXED_NOW);
     expect(result.nextOutage).not.toBeNull();
-    expect(result.nextOutage!.probability).toBeGreaterThanOrEqual(0.9);
+    expect(result.nextOutage!.probability).toBeGreaterThanOrEqual(0.25);
   });
 
   test("when DOWN, currentOutageEnd is populated", () => {

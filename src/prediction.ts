@@ -289,8 +289,6 @@ export function predict(
   const hourlyStartRisk = computeHourlyRisk(startSlotProbs, dayWeights, now);
   const { expectedMin, range } = predictDuration(incidents, alpha);
 
-  const dailyProbability = computeDailyOutageProbability(incidents, now);
-
   let nextOutage: OutagePrediction["nextOutage"] = null;
   if (currentStatus !== "DOWN") {
     const peakWindow = findPeakRiskWindow(hourlyStartRisk);
@@ -304,7 +302,7 @@ export function predict(
 
       nextOutage = {
         expectedStart: peakWindow.hour,
-        probability: dailyProbability,
+        probability: peakWindow.probability,
         expectedDurationMin: duration.expectedMin,
         durationRange: duration.range,
       };
